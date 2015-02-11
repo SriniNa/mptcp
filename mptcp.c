@@ -19,6 +19,7 @@ int main (int argc, char** argv)
     struct pcap_pkthdr pktHeader;
     char errBuffer[PCAP_ERRBUF_SIZE];
     int i = 0;
+    int countSyns = 0;
 
     printf ("entering main \n");
 
@@ -51,18 +52,21 @@ int main (int argc, char** argv)
         char *ipSrc = inet_ntoa(ipHeader->ip_src);
         printf (" source address %s \n", ipSrc);
         printf (" dest address %s \n", (char *) inet_ntoa(ipHeader->ip_dst));
-        int ipHdrLen = ipHeader->ip_hl;
-        readPacket += ipHdrLen;
+        //int ipHdrLen = ipHeader->ip_hl * 4; // IP Header in words
+        readPacket = readPacket + sizeof(struct ip);
 
         struct tcphdr *tcpHdr = (struct tcphdr *) readPacket;
-        unsigned short srcPort = tcpHdr->th_sport;
-        unsigned short dstPort = tcpHdr->th_dport;
+        unsigned int srcPort = ntohs(tcpHdr->th_sport);
+        unsigned int dstPort = ntohs(tcpHdr->th_dport);
         unsigned char tcpFlags = tcpHdr->th_flags;
-
-        printf ("source port %d \n", srcPort);
-        printf ("dst port %d \n", dstPort);
-        printf ("tcp flags is SYN %d \n", (tcpFlags & TH_SYN));
+        int isSyn = (tcpFlags & TH_SYN) ? 1 : 0;
+        if (isSyn != 0) {
+            countSyns += 1;
+        }
+        printf ("source port %u \n", srcPort);
+        printf ("dst port %u \n", dstPort);
+        printf ("tcp flags is SYN %d \n", isSyn);
     }
-
+    printf ("total syns %d \n", countSyns);
 
 }
