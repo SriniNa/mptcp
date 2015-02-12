@@ -81,6 +81,11 @@ int main (int argc, char** argv)
     int i = 0;
     int countSyns = 0;
 
+    if (argc < 2) {
+        cout << " please specify pcap file to open" << endl;
+        exit(1);
+    }
+
 
     pPcap = pcap_open_offline(argv[1], errBuffer);
     if (pPcap == NULL) {
