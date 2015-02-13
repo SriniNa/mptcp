@@ -44,12 +44,12 @@ using namespace std;
 
 class MptcpTuple {
 
-    public:
     string srcIp;
     string dstIp;
     int srcPort;
     int dstPort;
 
+    public:
     MptcpTuple () {
     }
 
@@ -62,35 +62,100 @@ class MptcpTuple {
         return lhs.srcPort < rhs.srcPort; 
     }
 
+    string getSrcIp () {
+        return srcIp;
+    }
+
+    string getDstIp () {
+        return dstIp;
+    }
+
+    int getSrcPort () {
+        return srcPort;
+    }
+
+    int getDstPort () {
+        return dstPort;
+    }
 };
 
 
-map <uint32_t, MptcpTuple> clientTokens;
-map <MptcpTuple, uint32_t, MptcpTuple> serverTokens;
-map <uint32_t, vector<MptcpTuple> > countSubConnMap;
+class CryptoForToken {
+
+    public:
+    virtual
+    void generateToken (unsigned char * key, int keyLen, unsigned char *out) {
+    }
+
+};
+
+
+class Sha1ForToken: public CryptoForToken {
+    public:
+    virtual
+    void generateToken (unsigned char * key, int keyLen, unsigned char *out) {
+        SHA1(key, keyLen, out);
+    }
+
+};
+
+class ProcessPcap {
+    private:
+    map <uint32_t, MptcpTuple> clientTokens;
+    map <MptcpTuple, uint32_t, MptcpTuple> serverTokens;
+    map <uint32_t, vector<MptcpTuple> > countSubConnMap;
+    CryptoForToken *crypto;
+
+
+    public:
+    void processPcapFile (const char * fileName, const char * crypto);
+    void printMptcpConns ();
+
+};
 
 
 int main (int argc, char** argv)
 {
 
 
-    pcap_t * pPcap = NULL;
-    const unsigned char * readPacket;
-    struct pcap_pkthdr pktHeader;
-    char errBuffer[PCAP_ERRBUF_SIZE];
-    int i = 0;
-    int countSyns = 0;
 
     if (argc < 2) {
         cout << " please specify pcap file to open" << endl;
         exit(1);
     }
+    ProcessPcap pcap;
+    if (argc > 2) {
+        pcap.processPcapFile (argv[1], argv[2]);
+    } else {
+        pcap.processPcapFile (argv[1], NULL);
+    }
+    pcap.printMptcpConns ();
+}
 
 
-    pPcap = pcap_open_offline(argv[1], errBuffer);
+void
+ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
+
+    char errBuffer[PCAP_ERRBUF_SIZE];
+    pcap_t * pPcap = NULL;
+    const unsigned char * readPacket;
+    struct pcap_pkthdr pktHeader;
+    int i = 0;
+    int countSyns = 0;
+
+    pPcap = pcap_open_offline(fileName, errBuffer);
     if (pPcap == NULL) {
         cout << " error opening mptcp file" << endl;
         exit(1);
+    }
+
+    if (cryptoName == NULL) {
+        // default sha1
+        crypto = new Sha1ForToken ();
+    } else {
+        // add new crypto class derived from CryptoForToken
+        cout << " add support for new crypto " << endl;
+        exit (1);
     }
 
     for (i = 0; (readPacket = pcap_next(pPcap, &pktHeader)) != NULL; i++) {
@@ -103,7 +168,6 @@ int main (int argc, char** argv)
         } else if (etherType == 0x8100) {
             etherOffset = 18;
         } else {
-            cout << "unknown ether type "  << etherType << endl;
             continue;
         }
         readPacket += etherOffset;
@@ -133,7 +197,6 @@ int main (int argc, char** argv)
                     break;
                 }
                 if (tcpOption->kind == 30) {
-                    cout << " found mptcp option " << endl;
                     mptcp_subtype_version_t *subtypeVersion =
                             (mptcp_subtype_version_t *) (options + 2);
                     if (subtypeVersion->mp_subtype == 0) {
@@ -142,11 +205,11 @@ int main (int argc, char** argv)
                             memcpy (keySrc, key, 8);
                         } else {
                             memcpy (keyDst, key, 8);
-                            SHA1(keyDst, 8, sha1);
+                            crypto->generateToken(keyDst, 8, sha1);
                             uint32_t clientToken = 
                                 (sha1[0] << 24) | (sha1[1] << 16) | (sha1[2] << 8) | (sha1[3]);
                             cout << " client token is " << clientToken << endl;
-                            SHA1(keySrc, 8, sha1);
+                            crypto->generateToken(keySrc, 8, sha1);
                             uint32_t serverToken = ntohl(*((uint32_t*)sha1));
                             cout << " server token is " << serverToken << endl;
                             MptcpTuple tuple (string(ipSrc), string(ipDst), srcPort, dstPort);
@@ -178,6 +241,12 @@ int main (int argc, char** argv)
         }
     }
     cout << "total syns " << countSyns << endl;
+
+}
+
+void
+ProcessPcap::printMptcpConns () {
+
     map<uint32_t, MptcpTuple>::iterator itBegin = clientTokens.begin();
     map<uint32_t, MptcpTuple>::iterator itEnd = clientTokens.end();
     for (;itBegin != itEnd; itBegin++) {
@@ -188,19 +257,19 @@ int main (int argc, char** argv)
                             countSubConnMap.find(clientToken);
         vector<MptcpTuple> listConns = it->second;
         cout << "--------- Conn Details ----- " << endl;
-        cout << " ipSrc " << tuple.srcIp;
-        cout << " ipDst " << tuple.dstIp;
-        cout << " srcPort " << tuple.srcPort;
-        cout << " dstPort " << tuple.dstPort << endl;
+        cout << " ipSrc " << tuple.getSrcIp();
+        cout << " ipDst " << tuple.getDstIp();
+        cout << " srcPort " << tuple.getSrcPort();
+        cout << " dstPort " << tuple.getDstPort() << endl;
         cout << " client Token " << clientToken << endl;
         cout << " server Token " << serverToken << endl << endl;
         cout << " num Sub Connections " << listConns.size() << endl;
         for (int j=0; j < listConns.size(); j++) {
             MptcpTuple subTuple = listConns[j];
-            cout << " Sub Conn " << (j+1) << " Conn Details ipSrc " << subTuple.srcIp;
-            cout << " ipDst " << subTuple.dstIp;
-            cout << " srcPort " << subTuple.srcPort;
-            cout << " dstPort " << subTuple.dstPort << endl << endl;
+            cout << " Sub Conn " << (j+1) << " Conn Details ipSrc " << subTuple.getSrcIp();
+            cout << " ipDst " << subTuple.getDstIp();
+            cout << " srcPort " << subTuple.getSrcPort();
+            cout << " dstPort " << subTuple.getDstPort() << endl << endl;
 
         }
         cout << endl << "-----------------------------------" << endl;
