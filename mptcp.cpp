@@ -104,6 +104,9 @@ class ProcessPcap {
     map <uint32_t, MptcpTuple> clientTokens;
     map <MptcpTuple, uint32_t, MptcpTuple> serverTokens;
     map <uint32_t, vector<MptcpTuple> > countSubConnMap;
+    map <MptcpTuple, uint32_t, MptcpTuple > subConnMap;
+    map <uint32_t, uint64_t> connDataMap;
+    map <MptcpTuple, uint64_t> subConnDataMap;
     CryptoForToken *crypto;
 
 
@@ -116,8 +119,6 @@ class ProcessPcap {
 
 int main (int argc, char** argv)
 {
-
-
 
     if (argc < 2) {
         cout << " please specify pcap file to open" << endl;
@@ -139,6 +140,9 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
     char errBuffer[PCAP_ERRBUF_SIZE];
     pcap_t * pPcap = NULL;
     const unsigned char * readPacket;
+    const unsigned char * packetStart;
+    const unsigned char * headerEnd;
+    const unsigned char * tcpheaderEnd;
     struct pcap_pkthdr pktHeader;
     int i = 0;
     int countSyns = 0;
@@ -170,11 +174,18 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
         } else {
             continue;
         }
+        packetStart = readPacket;
         readPacket += etherOffset;
         struct ip *ipHeader =  (struct ip *) readPacket;
         char *ipSrc = inet_ntoa(ipHeader->ip_src);
         char *ipDst = inet_ntoa(ipHeader->ip_dst);
+        uint64_t totalLength = ntohs(ipHeader->ip_len) * 4;
+        int protocol = ipHeader->ip_p; 
         readPacket = readPacket + sizeof(struct ip);
+
+        if (protocol != 6) {
+            continue;
+        }
 
         struct tcphdr *tcpHdr = (struct tcphdr *) readPacket;
         unsigned int srcPort = ntohs(tcpHdr->th_sport);
@@ -186,13 +197,21 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
         unsigned char keyDst[8];
         unsigned char * result;
         unsigned char sha1[20];
-        
+        int tcpHeaderLength = tcpHdr->th_off * 4;
+        tcpheaderEnd = readPacket + tcpHeaderLength;
+        uint64_t headerLength = (uint64_t) tcpheaderEnd - (uint64_t) (packetStart);
+        uint64_t dataLength = totalLength - headerLength;
+
         if (isSyn != 0) {
+            cout << " data length " << dataLength << endl;
             countSyns += 1;
             readPacket = readPacket + sizeof(struct tcphdr);
             unsigned char * options = (unsigned char *)readPacket;
             while (1) {
                 tcp_options_t * tcpOption = (tcp_options_t *) options;
+                if (options >= tcpheaderEnd) {
+                    break;
+                }
                 if (tcpOption->kind == 0) {
                     break;
                 }
@@ -203,6 +222,8 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
                         uint64_t *key = (uint64_t *) (options + 4);
                         if (isAck == 0) {
                             memcpy (keySrc, key, 8);
+                            MptcpTuple tuple (string(ipSrc), string(ipDst), srcPort, dstPort);
+                            subConnDataMap[tuple] = dataLength;        
                         } else {
                             memcpy (keyDst, key, 8);
                             crypto->generateToken(keyDst, 8, sha1);
@@ -213,14 +234,20 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
                             uint32_t serverToken = ntohl(*((uint32_t*)sha1));
                             cout << " server token is " << serverToken << endl;
                             MptcpTuple tuple (string(ipSrc), string(ipDst), srcPort, dstPort);
+                            MptcpTuple revTuple (string(ipDst), string(ipSrc), dstPort, srcPort);
                             clientTokens[clientToken] = tuple;
                             serverTokens[tuple] = serverToken;
+                            subConnMap[tuple] = clientToken;
+                            subConnMap[revTuple] = clientToken;
+                            if (subConnDataMap.find(revTuple) != subConnDataMap.end()) {
+                                uint64_t currentData = subConnDataMap[revTuple];
+                            } 
                         }
-                    }
-                    if (subtypeVersion->mp_subtype == 1 && isAck == 0) {
+                    } else if (subtypeVersion->mp_subtype == 1 && isAck == 0) {
                         unsigned char *key = (unsigned char *) (options + 4);
                         uint32_t token = ntohl(*((uint32_t*)key));
                         MptcpTuple tuple (string(ipSrc), string(ipDst), srcPort, dstPort);
+                        MptcpTuple revTuple (string(ipDst), string(ipSrc), dstPort, srcPort);
                         cout << " token during join is " << token << endl;
                         map<uint32_t, vector<MptcpTuple> >::iterator it;
                         it = countSubConnMap.find(token);
@@ -229,13 +256,16 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
                             listTuple = it->second;
                         }
                         listTuple.push_back(tuple);
-                        countSubConnMap[token] = listTuple;    
+                        countSubConnMap[token] = listTuple;
+                        subConnMap[tuple] = token;
+                        subConnMap[revTuple] = token;
+                    } else if (subtypeVersion->mp_subtype == 1 && isAck == 1) {
                     }
                 }
                 if (tcpOption->kind == 1) {
-                    options = options + 1;
+                    options = ((unsigned char *)options) + 1;
                 } else {
-                    options = options + tcpOption->length;
+                    options = ((unsigned char *)options) + tcpOption->length;
                 }
             }
         }
