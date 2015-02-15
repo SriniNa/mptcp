@@ -422,6 +422,8 @@ ProcessPcap::printMptcpConnInfo () {
 
     map<uint32_t, MptcpTuple>::iterator itBegin = clientTokens.begin();
     map<uint32_t, MptcpTuple>::iterator itEnd = clientTokens.end();
+    cout << endl << " Total Number of Distinct Mptcp Connection: " << clientTokens.size() << endl;
+    cout << " The details of Connections: " << endl << endl;
     for (;itBegin != itEnd; itBegin++) {
         uint32_t clientToken = itBegin->first;
         MptcpTuple tuple = itBegin->second;
