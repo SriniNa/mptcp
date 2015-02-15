@@ -203,10 +203,10 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
 
     char errBuffer[PCAP_ERRBUF_SIZE];
     pcap_t * pPcap = NULL;
-    const unsigned char * readPacket;
-    const unsigned char * packetStart;
-    const unsigned char * headerEnd;
-    const unsigned char * tcpheaderEnd;
+    const unsigned char * readPacket = NULL;
+    const unsigned char * packetStart = NULL;
+    const unsigned char * headerEnd = NULL;
+    const unsigned char * tcpheaderEnd = NULL;
     struct pcap_pkthdr pktHeader;
     int i = 0;
     int countSyns = 0;
@@ -227,6 +227,10 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
     }
 
     for (i = 0; (readPacket = pcap_next(pPcap, &pktHeader)) != NULL; i++) {
+
+        if (readPacket == NULL) {
+            cout << " read packet is NULL. Something wrong " << endl;
+        }
 
         // Ethernet frame
         int etherType = ((int) (readPacket[12] << 8) | (int)readPacket[13]);
