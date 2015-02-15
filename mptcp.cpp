@@ -21,11 +21,16 @@
 #include <vector>
 
 
+
 typedef struct tcp_options {
     u_char kind;
     u_char length;
 } tcp_options_t;
 
+
+/*
+ *  MPTCP Options in TCP Header options field.
+ */
 typedef struct mptcp_subtype_version {
 
 #if BYTE_ORDER == BIG_ENDIAN
@@ -42,6 +47,9 @@ typedef struct mptcp_subtype_version {
 using namespace std;
 
 
+/*
+ *  Tuple used to match subconn
+ */
 class MptcpTuple {
 
     string srcIp;
@@ -80,6 +88,11 @@ class MptcpTuple {
 };
 
 
+
+/*
+ *  Base class for Crypto Algo used.
+ *  This is for future use if different crypto is used.
+ */
 class CryptoForToken {
 
     public:
@@ -90,6 +103,9 @@ class CryptoForToken {
 };
 
 
+/*
+ *  SHA1 algorithm is the current crypto used.
+ */
 class Sha1ForToken: public CryptoForToken {
     public:
     virtual
@@ -99,21 +115,42 @@ class Sha1ForToken: public CryptoForToken {
 
 };
 
+
+/*
+ *  The main class for processing packets from pcap file.
+ *  It gets the MPTCP connections, subconnections, tokens
+ *  and data sent/received.
+ */
 class ProcessPcap {
     private:
-    map <uint32_t, MptcpTuple> clientTokens;
-    map <MptcpTuple, uint32_t, MptcpTuple> serverTokens;
-    map <MptcpTuple, vector<unsigned char>, MptcpTuple> keySrcMap;
-    map <uint32_t, vector<MptcpTuple> > countSubConnMap;
-    map <MptcpTuple, uint32_t, MptcpTuple > subConnMap;
-    map <uint32_t, uint64_t> connDataMap;
-    map <MptcpTuple, uint64_t, MptcpTuple> subConnDataMap;
+    // map of cvlient token to Main Connection Tuple
+    map <uint32_t /*client token*/, MptcpTuple> clientTokens;
+
+    // map of Main connection tuple to serverToken
+    map <MptcpTuple, uint32_t /*serverToken */, MptcpTuple> serverTokens;
+
+    // map of main connection tuple to server key
+    map <MptcpTuple, vector<unsigned char> /*server key*/, MptcpTuple> keySrcMap;
+
+    // map of token to list of its sub connections
+    map <uint32_t /*token */, vector<MptcpTuple>/*list of subconns*/ > countSubConnMap;
+
+    // map of subconn tuple to token
+    map <MptcpTuple, uint32_t /*token*/, MptcpTuple > subConnMap;
+
+    // map of token to total connection data
+    map <uint32_t/*token*/, uint64_t /*total data in bytes*/> connDataMap;
+
+    // map of subconn tuple to subconn data
+    map <MptcpTuple, uint64_t /*data in bytes*/, MptcpTuple> subConnDataMap;
+
+    // Crypto algo to be used.
     CryptoForToken *crypto;
 
 
     public:
     void processPcapFile (const char * fileName, const char * crypto);
-    void printMptcpConns ();
+    void printMptcpConnInfo ();
 
 };
 
@@ -131,10 +168,19 @@ int main (int argc, char** argv)
     } else {
         pcap.processPcapFile (argv[1], NULL);
     }
-    pcap.printMptcpConns ();
+    pcap.printMptcpConnInfo ();
 }
 
-
+/*****************************************************************************
+ *  processPcapFile
+ *  Input: 
+ *        fileName -> pcap filename
+ *        cryptoName -> crypto algo used only if it is different from 
+ *                      the default SHA1.
+ *  Output: void
+ *  Description: Processes the pcap files. Then it processes each packet.
+ *               It specifically collects information about MpTcp Connections.
+ ****************************************************************************/
 void
 ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
 
@@ -258,7 +304,7 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
                             uint32_t serverToken = ntohl(*((uint32_t*)sha1));
                             cout << " server token is " << serverToken << endl;
                             clientTokens[clientToken] = revTuple;
-                            serverTokens[tuple] = serverToken;
+                            serverTokens[revTuple] = serverToken;
                             subConnMap[tuple] = clientToken;
                             subConnMap[revTuple] = clientToken;
                             if (subConnDataMap.find(revTuple) != subConnDataMap.end()) {
@@ -317,8 +363,14 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
 
 }
 
+/******************************************************************************
+ * printMptcpConnInfo
+ *
+ * Description: Prints the Mptcp Connection and its subconnection informations.
+ *
+ ******************************************************************************/
 void
-ProcessPcap::printMptcpConns () {
+ProcessPcap::printMptcpConnInfo () {
 
     map<uint32_t, MptcpTuple>::iterator itBegin = clientTokens.begin();
     map<uint32_t, MptcpTuple>::iterator itEnd = clientTokens.end();
@@ -337,7 +389,7 @@ ProcessPcap::printMptcpConns () {
         cout << " ipDst " << tuple.getDstIp();
         cout << " srcPort " << tuple.getSrcPort();
         cout << " dstPort " << tuple.getDstPort() << endl;
-        cout << " Total data transferred in conn and its subconn " << totalData << endl;
+        cout << " Total data transferred in main conn and its subconns " << totalData << endl;
         cout << " Total data transferred in main conn " << totalMainConnData << endl;
         cout << " client Token " << clientToken << endl;
         cout << " server Token " << serverToken << endl << endl;
