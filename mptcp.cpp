@@ -175,12 +175,12 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
         } else {
             continue;
         }
-        packetStart = readPacket;
         readPacket += etherOffset;
+        packetStart = readPacket;
         struct ip *ipHeader =  (struct ip *) readPacket;
         string ipSrc = string(inet_ntoa(ipHeader->ip_src));
         string ipDst = string(inet_ntoa(ipHeader->ip_dst));
-        uint64_t totalLength = ntohs(ipHeader->ip_len) * 4;
+        uint64_t totalLength = ntohs(ipHeader->ip_len);
         int protocol = ipHeader->ip_p; 
         readPacket = readPacket + sizeof(struct ip);
 
@@ -221,6 +221,7 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
             currentData = connDataMap[token];
             connDataMap[token] = currentData + dataLength;
         } else if (isSyn != 0) {
+            cout << " dataLength " << dataLength << endl;
             countSyns += 1;
             readPacket = readPacket + sizeof(struct tcphdr);
             unsigned char * options = (unsigned char *)readPacket;
