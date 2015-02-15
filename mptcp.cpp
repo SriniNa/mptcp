@@ -19,6 +19,7 @@
 #include <string.h>
 #include <map>
 #include <vector>
+#include "mptcp_utils.h"
 
 
 
@@ -45,6 +46,7 @@ typedef struct mptcp_subtype_version {
 } mptcp_subtype_version_t;
 
 using namespace std;
+using namespace mptcp_utils;
 
 
 /*
@@ -150,6 +152,9 @@ class ProcessPcap {
 
     public:
     void processPcapFile (const char * fileName, const char * crypto);
+    void processTcpOptions (unsigned char* options, MptcpTuple& tuple,
+                    MptcpTuple& revTuple, int isAck,
+                    uint64_t dataLength, const unsigned char *tcpHeaderEnd);
     void printMptcpConnInfo ();
 
 };
@@ -211,157 +216,181 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
 
     for (i = 0; (readPacket = pcap_next(pPcap, &pktHeader)) != NULL; i++) {
 
+        // Ethernet frame
         int etherType = ((int) (readPacket[12] << 8) | (int)readPacket[13]);
         int etherOffset = 0;
 
-        if (etherType == 0x0800) {
+        if (etherType == ETHERTYPE_IPV4) {
             etherOffset = 14;
-        } else if (etherType == 0x8100) {
+        } else if (etherType == ETHERTYPE_8021Q) {
             etherOffset = 18;
         } else {
             continue;
         }
         readPacket += etherOffset;
         packetStart = readPacket;
+
+        // IP header
         struct ip *ipHeader =  (struct ip *) readPacket;
-        string ipSrc = string(inet_ntoa(ipHeader->ip_src));
-        string ipDst = string(inet_ntoa(ipHeader->ip_dst));
-        uint64_t totalLength = ntohs(ipHeader->ip_len);
-        int protocol = ipHeader->ip_p; 
+        string ipSrc = getSrcIp(ipHeader);
+        string ipDst = getDstIp(ipHeader);
+        uint64_t totalLength = getTotalFragmentLength(ipHeader);
+        int protocol = getProtocol(ipHeader); 
         readPacket = readPacket + sizeof(struct ip);
 
-        if (protocol != 6) {
+        if (protocol != TCP_PROTOCOL) {
             continue;
         }
 
+        // TCP Header
         struct tcphdr *tcpHdr = (struct tcphdr *) readPacket;
-        unsigned int srcPort = ntohs(tcpHdr->th_sport);
-        unsigned int dstPort = ntohs(tcpHdr->th_dport);
-        unsigned char tcpFlags = tcpHdr->th_flags;
+        unsigned int srcPort = getSrcPort (tcpHdr);
+        unsigned int dstPort = getDstPort (tcpHdr);
+        unsigned char tcpFlags = getTcpFlags (tcpHdr);
         int isSyn = (tcpFlags & TH_SYN) ? 1 : 0;
         int isAck = (tcpFlags & TH_ACK) ? 1 : 0;
-        unsigned char keySrc[8];
-        unsigned char keyDst[8];
-        unsigned char * result;
-        unsigned char sha1[20];
-        int tcpHeaderLength = tcpHdr->th_off * 4;
+
+        // tcp header length and total data length
+        int tcpHeaderLength = getTcpHeaderLenInBytes (tcpHdr);
         tcpheaderEnd = readPacket + tcpHeaderLength;
         uint64_t headerLength = (uint64_t) tcpheaderEnd - (uint64_t) (packetStart);
         uint64_t dataLength = totalLength - headerLength;
 
+        // When Syn flag is not set
         if (isSyn == 0) {
             MptcpTuple tuple (ipSrc, ipDst, srcPort, dstPort);
             MptcpTuple revTuple (ipDst, ipSrc, dstPort, srcPort);
             uint64_t currentData = 0;
-            uint32_t token;
+            uint32_t token = 0;
             if (subConnDataMap.find(tuple) != subConnDataMap.end()) {
                 currentData = subConnDataMap[tuple];
                 subConnDataMap[tuple] = currentData + dataLength;
                 token = subConnMap[tuple];
-            } else {
+            } else if (subConnDataMap.find(revTuple) != subConnDataMap.end()) {
                 currentData = subConnDataMap[revTuple];
                 subConnDataMap[revTuple] = currentData + dataLength;
                 token = subConnMap[revTuple];
             }
             currentData = 0;
-            currentData = connDataMap[token];
-            connDataMap[token] = currentData + dataLength;
+            if (token != 0) {
+                currentData = connDataMap[token];
+                connDataMap[token] = currentData + dataLength;
+            }
         } else if (isSyn != 0) {
+            // When SYN flag is set
             cout << " dataLength " << dataLength << endl;
             countSyns += 1;
             readPacket = readPacket + sizeof(struct tcphdr);
             unsigned char * options = (unsigned char *)readPacket;
-            while (1) {
-                tcp_options_t * tcpOption = (tcp_options_t *) options;
-                if (options >= tcpheaderEnd) {
-                    break;
-                }
-                if (tcpOption->kind == 0) {
-                    break;
-                }
-                if (tcpOption->kind == 30) {
-                    mptcp_subtype_version_t *subtypeVersion =
-                            (mptcp_subtype_version_t *) (options + 2);
-                    if (subtypeVersion->mp_subtype == 0) {
-                        uint64_t *key = (uint64_t *) (options + 4);
-                        if (isAck == 0) {
-                            memcpy (keySrc, key, 8);
-                            MptcpTuple tuple (ipSrc, ipDst, srcPort, dstPort);
-                            subConnDataMap[tuple] = dataLength;
-                            keySrcMap[tuple] = vector<unsigned char> (keySrc, keySrc + 8);
-                        } else {
-                            MptcpTuple tuple (ipSrc, ipDst, srcPort, dstPort);
-                            MptcpTuple revTuple (ipDst, ipSrc, dstPort, srcPort);
-                            memcpy (keyDst, key, 8);
-                            crypto->generateToken(keyDst, 8, sha1);
-                            uint32_t clientToken = 
-                                (sha1[0] << 24) | (sha1[1] << 16) | (sha1[2] << 8) | (sha1[3]);
-                            vector <unsigned char> keySource = keySrcMap[revTuple];
-                            for (int k=0; k < 8; k++) {
-                                keySrc[k] = keySource[k];
-                            }
-                            crypto->generateToken(keySrc, 8, sha1);
-                            uint32_t serverToken = ntohl(*((uint32_t*)sha1));
-                            cout << " server token is " << serverToken << endl;
-                            clientTokens[clientToken] = revTuple;
-                            serverTokens[revTuple] = serverToken;
-                            subConnMap[tuple] = clientToken;
-                            subConnMap[revTuple] = clientToken;
-                            if (subConnDataMap.find(revTuple) != subConnDataMap.end()) {
-                                uint64_t currentData = subConnDataMap[revTuple];
-                                uint64_t connCurrentData = connDataMap[clientToken];
-                                connDataMap [clientToken] = connCurrentData + currentData + dataLength;
-                                subConnDataMap [revTuple] = currentData + dataLength;
-                            } 
-                        }
-                    } else if (subtypeVersion->mp_subtype == 1 && isAck == 0) {
-                        unsigned char *key = (unsigned char *) (options + 4);
-                        uint32_t token = ntohl(*((uint32_t*)key));
-                        MptcpTuple tuple (ipSrc, ipDst, srcPort, dstPort);
-                        MptcpTuple revTuple (ipDst, ipSrc, dstPort, srcPort);
-                        cout << " token during join is " << token << endl;
-                        map<uint32_t, vector<MptcpTuple> >::iterator it;
-                        it = countSubConnMap.find(token);
-                        vector<MptcpTuple> listTuple;
-                        if (it != countSubConnMap.end()) {
-                            listTuple = it->second;
-                        }
-                        listTuple.push_back(tuple);
-                        countSubConnMap[token] = listTuple;
-                        subConnMap[tuple] = token;
-                        subConnMap[revTuple] = token;
-                        subConnDataMap [tuple] = dataLength;
-                        uint64_t currentData = 0;
-                        if (connDataMap.find(token) != connDataMap.end()) {
-                            currentData = connDataMap[token];
-                        }
-                        connDataMap [token] = dataLength + currentData;
-                    } else if (subtypeVersion->mp_subtype == 1 && isAck == 1) {
-                        MptcpTuple revTuple (ipDst, ipSrc, dstPort, srcPort);
-                        uint64_t currentData = 0;
-                        uint32_t token = subConnMap[revTuple];
-                        if (connDataMap.find(token) != connDataMap.end()) {
-                            currentData = connDataMap[token];
-                            connDataMap [token] = dataLength + currentData;
-                        }
-                        currentData = 0;
-                        if (subConnDataMap.find(revTuple) != subConnDataMap.end()) {
-                            currentData = subConnDataMap[revTuple];
-                            subConnDataMap [revTuple] = currentData + dataLength;
-                        }
-                    }
-                }
-                if (tcpOption->kind == 1) {
-                    options = ((unsigned char *)options) + 1;
-                } else {
-                    options = ((unsigned char *)options) + tcpOption->length;
-                }
-            }
+            MptcpTuple tuple (ipSrc, ipDst, srcPort, dstPort);
+            MptcpTuple revTuple (ipDst, ipSrc, dstPort, srcPort);
+            processTcpOptions (options, tuple, revTuple, isAck, dataLength, tcpheaderEnd);
         }
     }
     cout << "total syns " << countSyns << endl;
 
 }
+
+
+
+/******************************************************************************
+ * processTcpOptions
+ *
+ * Description: Process the MpTcp options in TCP header.
+ *
+ ******************************************************************************/
+void
+ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
+                    MptcpTuple& revTuple, int isAck,
+                    uint64_t dataLength, const unsigned char* tcpHeaderEnd) {
+
+    unsigned char keySrc[KEY_SIZE_BYTES];
+    unsigned char keyDst[KEY_SIZE_BYTES];
+    unsigned char sha1[SHA1_OUT_SIZE_BYTES];
+
+    while (1) {
+	tcp_options_t * tcpOption = (tcp_options_t *) options;
+	if (options >= tcpHeaderEnd) {
+	    break;
+	}
+	if (tcpOption->kind == ENDOF_OPTION_TYPE) {
+	    break;
+	}
+	if (tcpOption->kind == MPTCP_OPTION_TYPE) {
+	    mptcp_subtype_version_t *subtypeVersion =
+		    (mptcp_subtype_version_t *) (options + 2);
+	    if (subtypeVersion->mp_subtype == MP_SUBTYPE_CAPABILITY) {
+		uint64_t *key = (uint64_t *) (options + 4);
+		if (isAck == 0) {
+		    memcpy (keySrc, key, KEY_SIZE_BYTES);
+		    subConnDataMap[tuple] = dataLength;
+		    keySrcMap[tuple] = vector<unsigned char> (keySrc, keySrc + 8);
+		} else {
+		    memcpy (keyDst, key, KEY_SIZE_BYTES);
+		    crypto->generateToken(keyDst, KEY_SIZE_BYTES, sha1);
+		    uint32_t clientToken = ntohl(*((uint32_t*)sha1));
+		    vector <unsigned char> keySource = keySrcMap[revTuple];
+		    for (int k=0; k < KEY_SIZE_BYTES; k++) {
+			keySrc[k] = keySource[k];
+		    }
+		    crypto->generateToken(keySrc, KEY_SIZE_BYTES, sha1);
+		    uint32_t serverToken = ntohl(*((uint32_t*)sha1));
+		    cout << " server token is " << serverToken << endl;
+		    clientTokens[clientToken] = revTuple;
+		    serverTokens[revTuple] = serverToken;
+		    subConnMap[tuple] = clientToken;
+		    subConnMap[revTuple] = clientToken;
+		    if (subConnDataMap.find(revTuple) != subConnDataMap.end()) {
+			uint64_t currentData = subConnDataMap[revTuple];
+			uint64_t connCurrentData = connDataMap[clientToken];
+			connDataMap [clientToken] = connCurrentData + currentData + dataLength;
+			subConnDataMap [revTuple] = currentData + dataLength;
+		    }
+		}
+	    } else if (subtypeVersion->mp_subtype == MP_SUBTYPE_JOIN &&
+		       isAck == 0) {
+		unsigned char *key = (unsigned char *) (options + 4);
+		uint32_t token = ntohl(*((uint32_t*)key));
+		cout << " token during join is " << token << endl;
+		map<uint32_t, vector<MptcpTuple> >::iterator it;
+		it = countSubConnMap.find(token);
+		vector<MptcpTuple> listTuple;
+		if (it != countSubConnMap.end()) {
+		    listTuple = it->second;
+		}
+		listTuple.push_back(tuple);
+		countSubConnMap[token] = listTuple;
+		subConnMap[tuple] = token;
+		subConnMap[revTuple] = token;
+		subConnDataMap [tuple] = dataLength;
+		uint64_t currentData = 0;
+		if (connDataMap.find(token) != connDataMap.end()) {
+		    currentData = connDataMap[token];
+		}
+		connDataMap [token] = dataLength + currentData;
+	    } else if (subtypeVersion->mp_subtype == MP_SUBTYPE_JOIN &&
+		       isAck == 1) {
+		uint64_t currentData = 0;
+		uint32_t token = subConnMap[revTuple];
+		if (connDataMap.find(token) != connDataMap.end()) {
+		    currentData = connDataMap[token];
+		    connDataMap [token] = dataLength + currentData;
+		}
+		currentData = 0;
+		if (subConnDataMap.find(revTuple) != subConnDataMap.end()) {
+		    currentData = subConnDataMap[revTuple];
+		    subConnDataMap [revTuple] = currentData + dataLength;
+		}
+	    }
+	}
+	if (tcpOption->kind == NOOP_OPTION_TYPE) {
+	    options = ((unsigned char *)options) + 1;
+	} else {
+	    options = ((unsigned char *)options) + tcpOption->length;
+	}
+    }
+}
+
 
 /******************************************************************************
  * printMptcpConnInfo
