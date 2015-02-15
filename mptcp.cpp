@@ -137,7 +137,7 @@ class Sha1ForToken: public CryptoForToken {
  */
 class ProcessPcap {
     private:
-    // map of cvlient token to Main Connection Tuple
+    // map of client token to Main Connection Tuple
     map <uint32_t /*client token*/, MptcpTuple> clientTokens;
 
     // map of Main connection tuple to serverToken
@@ -442,6 +442,7 @@ ProcessPcap::printMptcpConnInfo () {
         cout << " client Token " << clientToken << endl;
         cout << " server Token " << serverToken << endl << endl;
         cout << " num Sub Connections " << listConns.size() << endl;
+
         for (int j=0; j < listConns.size(); j++) {
             MptcpTuple subTuple = listConns[j];
             uint64_t totalSubConnData = subConnDataMap[subTuple];
