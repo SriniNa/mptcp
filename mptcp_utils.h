@@ -39,7 +39,7 @@ namespace mptcp_utils {
 
 
     string getDstIp (struct ip* ipHeader) {
-        return string(inet_ntoa(ipHeader->ip_src));
+        return string(inet_ntoa(ipHeader->ip_dst));
     }
 
     int getTotalFragmentLength (struct ip* ipHeader) {

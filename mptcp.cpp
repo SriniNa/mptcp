@@ -1,3 +1,15 @@
+/******************************************************************************
+ *
+ *  File mptcp.cpp
+ *  Author: Srinivasan Dwarakanathan
+ *  This file processes pcap file specified by the user.
+ *  It processes each packet and identifies the mptcp connections,
+ *  subconnections. It also gets the client and server tokens used
+ *  and it also gets the total data communicated(2-way) on each connection
+ *  as well as each sub-connection.
+ *
+ ******************************************************************************/
+
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
 #include <openssl/engine.h>
@@ -278,7 +290,6 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
             }
         } else if (isSyn != 0) {
             // When SYN flag is set
-            cout << " dataLength " << dataLength << endl;
             countSyns += 1;
             readPacket = readPacket + sizeof(struct tcphdr);
             unsigned char * options = (unsigned char *)readPacket;
@@ -287,7 +298,6 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
             processTcpOptions (options, tuple, revTuple, isAck, dataLength, tcpheaderEnd);
         }
     }
-    cout << "total syns " << countSyns << endl;
 
 }
 
@@ -335,7 +345,6 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 		    }
 		    crypto->generateToken(keySrc, KEY_SIZE_BYTES, sha1);
 		    uint32_t serverToken = ntohl(*((uint32_t*)sha1));
-		    cout << " server token is " << serverToken << endl;
 		    clientTokens[clientToken] = revTuple;
 		    serverTokens[revTuple] = serverToken;
 		    subConnMap[tuple] = clientToken;
@@ -351,7 +360,6 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 		       isAck == 0) {
 		unsigned char *key = (unsigned char *) (options + 4);
 		uint32_t token = ntohl(*((uint32_t*)key));
-		cout << " token during join is " << token << endl;
 		map<uint32_t, vector<MptcpTuple> >::iterator it;
 		it = countSubConnMap.find(token);
 		vector<MptcpTuple> listTuple;
@@ -418,8 +426,8 @@ ProcessPcap::printMptcpConnInfo () {
         cout << " ipDst " << tuple.getDstIp();
         cout << " srcPort " << tuple.getSrcPort();
         cout << " dstPort " << tuple.getDstPort() << endl;
-        cout << " Total data transferred in main conn and its subconns " << totalData << endl;
-        cout << " Total data transferred in main conn " << totalMainConnData << endl;
+        cout << " Total data transferred in main conn and its subconns: " << totalData << " bytes" << endl;
+        cout << " Total data transferred in main conn: " << totalMainConnData << " bytes" << endl;
         cout << " client Token " << clientToken << endl;
         cout << " server Token " << serverToken << endl << endl;
         cout << " num Sub Connections " << listConns.size() << endl;
@@ -430,7 +438,7 @@ ProcessPcap::printMptcpConnInfo () {
             cout << " ipDst " << subTuple.getDstIp();
             cout << " srcPort " << subTuple.getSrcPort();
             cout << " dstPort " << subTuple.getDstPort() << endl;
-            cout << " Total data transferred in sub conn " << totalSubConnData << endl << endl;
+            cout << " Total data transferred in sub conn: " << totalSubConnData << " bytes" << endl << endl;
 
         }
         cout << endl << "-----------------------------------" << endl;
