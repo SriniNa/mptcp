@@ -333,26 +333,30 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 	if (tcpOption->kind == MPTCP_OPTION_TYPE) {
 	    mptcp_subtype_version_t *subtypeVersion =
 		    (mptcp_subtype_version_t *) (options + 2);
-	    if (subtypeVersion->mp_subtype == MP_SUBTYPE_CAPABILITY) {
+	    if (subtypeVersion->mp_subtype == MP_CAPABLE_SUBTYPE) {
 		uint64_t *key = (uint64_t *) (options + 4);
 		if (isAck == 0) {
 		    memcpy (keySrc, key, KEY_SIZE_BYTES);
 		    subConnDataMap[tuple] = dataLength;
-		    keySrcMap[tuple] = vector<unsigned char> (keySrc, keySrc + 8);
+		    keySrcMap[tuple] =
+                        vector<unsigned char> (keySrc, keySrc + KEY_SIZE_BYTES);
 		} else {
 		    memcpy (keyDst, key, KEY_SIZE_BYTES);
 		    crypto->generateToken(keyDst, KEY_SIZE_BYTES, sha1);
 		    uint32_t clientToken = ntohl(*((uint32_t*)sha1));
+
 		    vector <unsigned char> keySource = keySrcMap[revTuple];
 		    for (int k=0; k < KEY_SIZE_BYTES; k++) {
 			keySrc[k] = keySource[k];
 		    }
 		    crypto->generateToken(keySrc, KEY_SIZE_BYTES, sha1);
 		    uint32_t serverToken = ntohl(*((uint32_t*)sha1));
+
 		    clientTokens[clientToken] = revTuple;
 		    serverTokens[revTuple] = serverToken;
 		    subConnMap[tuple] = clientToken;
 		    subConnMap[revTuple] = clientToken;
+
 		    if (subConnDataMap.find(revTuple) != subConnDataMap.end()) {
 			uint64_t currentData = subConnDataMap[revTuple];
 			uint64_t connCurrentData = connDataMap[clientToken];
@@ -360,7 +364,7 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 			subConnDataMap [revTuple] = currentData + dataLength;
 		    }
 		}
-	    } else if (subtypeVersion->mp_subtype == MP_SUBTYPE_JOIN &&
+	    } else if (subtypeVersion->mp_subtype == MP_JOIN_SUBTYPE &&
 		       isAck == 0) {
 		unsigned char *key = (unsigned char *) (options + 4);
 		uint32_t token = ntohl(*((uint32_t*)key));
@@ -372,15 +376,17 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 		}
 		listTuple.push_back(tuple);
 		countSubConnMap[token] = listTuple;
+
 		subConnMap[tuple] = token;
 		subConnMap[revTuple] = token;
 		subConnDataMap [tuple] = dataLength;
+
 		uint64_t currentData = 0;
 		if (connDataMap.find(token) != connDataMap.end()) {
 		    currentData = connDataMap[token];
 		}
 		connDataMap [token] = dataLength + currentData;
-	    } else if (subtypeVersion->mp_subtype == MP_SUBTYPE_JOIN &&
+	    } else if (subtypeVersion->mp_subtype == MP_JOIN_SUBTYPE &&
 		       isAck == 1) {
 		uint64_t currentData = 0;
 		uint32_t token = subConnMap[revTuple];
@@ -388,6 +394,7 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 		    currentData = connDataMap[token];
 		    connDataMap [token] = dataLength + currentData;
 		}
+
 		currentData = 0;
 		if (subConnDataMap.find(revTuple) != subConnDataMap.end()) {
 		    currentData = subConnDataMap[revTuple];

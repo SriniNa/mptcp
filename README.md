@@ -25,7 +25,8 @@ Sha1ForToken derives from CryptoForToken. In future as mentioned in RFC6284, if 
 support is added for other cypto algorithms, then new derived classes can be added.
 The token is computed when the MpTcp connection is added with TCP options MPTCP
 and subtype MP_CAPABLE. When subconnections are added, the connection is identified by 
-the token specified in the Join.
+the token specified in the Join. The client and server tokens' decimal value is printed
+in the program output.
 
 For task2, from the IP header, total IP fragment length is got. TCP header has the
 total TCP header in bytes. So, using the above two information, total data length

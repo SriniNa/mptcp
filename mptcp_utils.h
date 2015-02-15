@@ -22,8 +22,8 @@
 #define ENDOF_OPTION_TYPE 0
 #define NOOP_OPTION_TYPE 1
 
-#define MP_SUBTYPE_CAPABILITY 0
-#define MP_SUBTYPE_JOIN 1
+#define MP_CAPABLE_SUBTYPE 0
+#define MP_JOIN_SUBTYPE 1
 
 
 using namespace std;
