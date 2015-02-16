@@ -2,6 +2,10 @@
 
 Project for mptcp experiments.
 
+Installing required libraries:
+sudo apt-get install libpcap-dev
+sudo apt-get install libssl-dev
+
 Compilation of code:
 g++ mptcp.cpp -lpcap -lssl -lcrypto 
 
