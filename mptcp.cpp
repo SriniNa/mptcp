@@ -35,27 +35,6 @@
 
 
 
-typedef struct tcp_options {
-    u_char kind;
-    u_char length;
-} tcp_options_t;
-
-
-/*
- *  MPTCP Options in TCP Header options field.
- */
-typedef struct mptcp_subtype_version {
-
-#if BYTE_ORDER == BIG_ENDIAN
-    u_char mp_subtype:4,
-           mp_version:4;
-#endif
-#if BYTE_ORDER == LITTLE_ENDIAN
-    u_char mp_version:4,
-           mp_subtype:4;
-#endif
-
-} mptcp_subtype_version_t;
 
 using namespace std;
 using namespace mptcp_utils;
@@ -233,7 +212,8 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
         }
 
         // Ethernet frame
-        int etherType = ((int) (readPacket[12] << 8) | (int)readPacket[13]);
+        ether_header_t * etherHeader = (ether_header_t*) readPacket;
+        int etherType = getEtherType(etherHeader);;
         int etherOffset = 0;
 
         if (etherType == ETHERTYPE_IPV4) {

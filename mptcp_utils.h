@@ -24,7 +24,7 @@
 
 #define MP_CAPABLE_SUBTYPE 0
 #define MP_JOIN_SUBTYPE 1
-
+#define ETHER_ADDR_LEN 6
 
 using namespace std;
 
@@ -32,6 +32,38 @@ using namespace std;
 
 
 namespace mptcp_utils {
+
+    typedef struct ether_header {
+        unsigned char ether_dhost [ETHER_ADDR_LEN];
+        unsigned char ether_shost [ETHER_ADDR_LEN];
+        u_short ether_type;
+    } ether_header_t;
+
+    typedef struct tcp_options {
+        u_char kind;
+        u_char length;
+    } tcp_options_t;
+
+
+    /*
+     *  MPTCP Options in TCP Header options field.
+     */
+    typedef struct mptcp_subtype_version {
+
+#if BYTE_ORDER == BIG_ENDIAN
+        u_char mp_subtype:4,
+               mp_version:4;
+#endif
+#if BYTE_ORDER == LITTLE_ENDIAN
+        u_char mp_version:4,
+               mp_subtype:4;
+#endif
+
+    } mptcp_subtype_version_t;
+
+    int getEtherType (ether_header_t * etherHeader) {
+        return ntohs(etherHeader->ether_type);
+    }
 
     string getSrcIp (struct ip* ipHeader) {
         return string(inet_ntoa(ipHeader->ip_src));
