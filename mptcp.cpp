@@ -140,12 +140,12 @@ class ProcessPcap {
     // Crypto algo to be used.
     CryptoForToken *crypto;
 
-
-    public:
-    void processPcapFile (const char * fileName, const char * crypto);
     void processTcpOptions (unsigned char* options, MptcpTuple& tuple,
                     MptcpTuple& revTuple, int isAck,
                     uint64_t dataLength, const unsigned char *tcpHeaderEnd);
+
+    public:
+    void processPcapFile (const char * fileName, const char * crypto);
     void printMptcpConnInfo ();
 
 };
