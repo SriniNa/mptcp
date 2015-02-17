@@ -266,7 +266,7 @@ class ProcessPcap {
         unsigned char hmacKey[2 * KEY_SIZE_BYTES];
         unsigned char hmacData[KEY_SIZE_BYTES];
         unsigned char hmacResult[SHA1_OUT_SIZE_BYTES];
-        unsigned int md_len = 20;
+        unsigned int md_len = SHA1_OUT_SIZE_BYTES;
 
         getSrcKey (keySrc, token);
         getDstKey (keyDst, token);
@@ -282,7 +282,8 @@ class ProcessPcap {
         HMAC_Final(&ctx, hmacResult, &md_len);
         HMAC_CTX_cleanup(&ctx);
 
-        for (int i =0; i < 20; i += 4) {
+        int wordSize = 4;
+        for (int i =0; i < SHA1_OUT_SIZE_BYTES; i += wordSize) {
             uint32_t hmac = ntohl(*((uint32_t*) (hmacResult + i)));
             hMsg.push_back(hmac);
         }
@@ -298,7 +299,9 @@ class ProcessPcap {
             return false;
         }
         getFullHmac (token, tuple, computedHmac);
-        for (int i = 0; i < 5; i++) {
+
+        int numWords = SHA1_OUT_SIZE_BYTES / 4;
+        for (int i = 0; i < numWords; i++) {
             if (computedHmac[i] != ackMsgHmac[i]) {
                 return false;
             }
