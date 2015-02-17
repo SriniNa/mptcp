@@ -477,6 +477,12 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
                     continue;
                 }
             }
+
+
+            if (getConnectionState (tuple) != CONNECTED_STATE &&
+                getConnectionState(revTuple) != CONNECTED_STATE) {
+                continue;
+            }
  
             if (subConnDataMap.find(tuple) != subConnDataMap.end()) {
                 currentData = subConnDataMap[tuple];
