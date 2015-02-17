@@ -93,7 +93,8 @@ class CryptoForToken {
     void generateToken (unsigned char * key, int keyLen, unsigned char *out) {
     }
     void generateHmacMessage (unsigned char * key, int keyLen,
-            unsigned char *data, int dataLen, unsigned char * out) {
+            unsigned char *data, int dataLen,
+            unsigned char * out, unsigned int*len) {
     }
 
 };
@@ -110,8 +111,8 @@ class Sha1ForToken: public CryptoForToken {
     }
 
     void generateHmacMessage (unsigned char * key, int keyLen,
-            unsigned char *data, int dataLen, unsigned char *out) {
-        HMAC(EVP_sha1(), key, keyLen, data, dataLen, out, NULL);
+                              unsigned char *data, int dataLen,
+                              unsigned char *out, unsigned int *len) {
     }
 };
 
@@ -231,18 +232,71 @@ class ProcessPcap {
         unsigned char keyDst[KEY_SIZE_BYTES];
         unsigned char hmacKey[2 * KEY_SIZE_BYTES];
         unsigned char hmacData[KEY_SIZE_BYTES];
-        unsigned char hmacResult[SHA1_OUT_SIZE_BYTES];
+        unsigned char hmacResult[20] = {0};
+        unsigned int md_len = 20;
+
         getSrcKey (keySrc, token);
         getDstKey (keyDst, token);
         getHmacKey (keyDst, keySrc, hmacKey);
         uint32_t senderR = senderRandomMap[tuple];
         uint32_t receiverR = receiverRandomMap[tuple];
         getHmacData (receiverR, senderR, hmacData);
-        crypto->generateHmacMessage (hmacKey, 2 * KEY_SIZE_BYTES,
-                                     hmacData, KEY_SIZE_BYTES, hmacResult);
-        uint64_t truncatedHmac = be64toh (*((uint64_t*) (hmacResult + 12)));
+
+        HMAC_CTX ctx;
+        HMAC_CTX_init(&ctx);
+        HMAC_Init(&ctx, hmacKey, sizeof(hmacKey), EVP_sha1());
+        HMAC_Update(&ctx, hmacData, sizeof(hmacData));
+        HMAC_Final(&ctx, hmacResult, &md_len);
+        HMAC_CTX_cleanup(&ctx);
+
+        uint64_t truncatedHmac = be64toh (*((uint64_t*) (hmacResult)));
         return truncatedHmac;
     }
+
+    void getFullHmac (uint32_t token, MptcpTuple& tuple, vector<uint32_t>& hMsg) {
+        unsigned char keySrc[KEY_SIZE_BYTES];
+        unsigned char keyDst[KEY_SIZE_BYTES];
+        unsigned char hmacKey[2 * KEY_SIZE_BYTES];
+        unsigned char hmacData[KEY_SIZE_BYTES];
+        unsigned char hmacResult[SHA1_OUT_SIZE_BYTES];
+        unsigned int md_len = 20;
+
+        getSrcKey (keySrc, token);
+        getDstKey (keyDst, token);
+        getHmacKey (keySrc, keyDst, hmacKey);
+        uint32_t senderR = senderRandomMap[tuple];
+        uint32_t receiverR = receiverRandomMap[tuple];
+        getHmacData (senderR, receiverR, hmacData);
+
+        HMAC_CTX ctx;
+        HMAC_CTX_init(&ctx);
+        HMAC_Init(&ctx, hmacKey, sizeof(hmacKey), EVP_sha1());
+        HMAC_Update(&ctx, hmacData, sizeof(hmacData));
+        HMAC_Final(&ctx, hmacResult, &md_len);
+        HMAC_CTX_cleanup(&ctx);
+
+        for (int i =0; i < 20; i += 4) {
+            uint32_t hmac = ntohl(*((uint32_t*) (hmacResult + i)));
+            hMsg.push_back(hmac);
+        }
+    }
+
+    bool verifyHmacInAck (uint32_t token, MptcpTuple& tuple,
+            unsigned char * options, unsigned char * tcpheaderEnd) {
+        vector<uint32_t> computedHmac;
+        vector<uint32_t> ackMsgHmac;
+        if (extractHmacMessage (options, tcpheaderEnd, ackMsgHmac) == false) {
+            return false;
+        }
+        getFullHmac (token, tuple, computedHmac);
+        for (int i = 0; i < 5; i++) {
+            if (computedHmac[i] != ackMsgHmac[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
 
     void processTcpOptions (unsigned char* options, MptcpTuple& tuple,
                     MptcpTuple& revTuple, int isAck,
@@ -371,9 +425,15 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
             if (getConnectionState (tuple) == SYN_ACK_JOIN_STATE) {
                 unsigned char * options =
                    (unsigned char *) readPacket + sizeof(struct tcphdr);
+                token = subConnMap[tuple];
+                if (verifyHmacInAck (token, tuple,
+                        options, (unsigned char *)tcpheaderEnd)) {
                     setConnectionState(CONNECTED_STATE, tuple);
+                }
             }
-
+            if (getConnectionState(tuple) != CONNECTED_STATE) {
+                continue;
+            }
             if (subConnDataMap.find(tuple) != subConnDataMap.end()) {
                 currentData = subConnDataMap[tuple];
                 subConnDataMap[tuple] = currentData + dataLength;
@@ -481,7 +541,7 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
                     break;
                 }
 		unsigned char *random = (unsigned char *) (options + 8);
-		uint32_t randomNum = ntohl(*((uint32_t*)random));
+		uint32_t randomNum = *((uint32_t*)random);
                 senderRandomMap[tuple] = randomNum;
 
 		map<uint32_t, vector<MptcpTuple> >::iterator it;
@@ -510,10 +570,15 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 		unsigned char *hmac = (unsigned char *) (options + 4);
 		uint64_t truncHmac = be64toh (*((uint64_t*)hmac));
 		unsigned char *random = (unsigned char *) (options + 12);
-		uint32_t randomNum = ntohl(*((uint32_t*)random));
+		uint32_t randomNum = *((uint32_t*)random);
                 receiverRandomMap[revTuple] = randomNum;
 
                 uint64_t generatedHmac = getTruncatedHmac (token, revTuple);
+                vector<uint32_t> hmacMsg;
+                getFullHmac (token, revTuple,hmacMsg);
+                if (truncHmac != generatedHmac) {
+                    break;
+                }
 
 		if (connDataMap.find(token) != connDataMap.end()) {
 		    currentData = connDataMap[token];
