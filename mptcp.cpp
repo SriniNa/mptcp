@@ -109,6 +109,23 @@ class Sha1ForToken: public CryptoForToken {
 };
 
 
+
+/*
+ *  Enum to maintain connection states.
+ */
+typedef enum {
+    SYN_CAPABLE_STATE = 0,
+    SYN_ACK_CAPABLE_STATE,
+    SYN_JOIN_STATE,
+    SYN_ACK_JOIN_STATE,
+    CONNECTED_STATE,
+    STATE_MAX
+
+} connection_state_t;
+
+
+
+
 /*
  *  The main class for processing packets from pcap file.
  *  It gets the MPTCP connections, subconnections, tokens
@@ -125,6 +142,9 @@ class ProcessPcap {
     // map of main connection tuple to server key
     map <MptcpTuple, vector<unsigned char> /*server key*/, MptcpTuple> keySrcMap;
 
+    // map of main connection tuple to server key
+    map <MptcpTuple, uint32_t /*random Number*/, MptcpTuple> senderRandomMap;
+
     // map of token to list of its sub connections
     map <uint32_t /*token */, vector<MptcpTuple>/*list of subconns*/ > countSubConnMap;
 
@@ -137,8 +157,34 @@ class ProcessPcap {
     // map of subconn tuple to subconn data
     map <MptcpTuple, uint64_t /*data in bytes*/, MptcpTuple> subConnDataMap;
 
+    // map of tuple to connection state
+    map <MptcpTuple, connection_state_t, MptcpTuple> connectionState;
+
     // Crypto algo to be used.
     CryptoForToken *crypto;
+
+    void setConnectionState (connection_state_t state, MptcpTuple& tuple) {
+        connectionState[tuple] = state;
+    }
+
+    connection_state_t getConnectionState (MptcpTuple& tuple) {
+        if (connectionState.find(tuple) != connectionState.end()) {
+            return connectionState[tuple];
+        }
+        return STATE_MAX;
+    }
+
+    connection_state_t getConnectionState (uint32_t token) {
+        MptcpTuple tuple = clientTokens[token];
+        if (connectionState.find(tuple) != connectionState.end()) {
+            return connectionState[tuple];
+        }
+        return STATE_MAX;
+    }
+
+    bool verifyHmacFlag (mptcp_subtype_version_t* subtypeVersion) {
+       return isMptcpHflagSet(subtypeVersion);
+    }
 
     void processTcpOptions (unsigned char* options, MptcpTuple& tuple,
                     MptcpTuple& revTuple, int isAck,
@@ -258,6 +304,14 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
             MptcpTuple revTuple (ipDst, ipSrc, dstPort, srcPort);
             uint64_t currentData = 0;
             uint32_t token = 0;
+
+            if (getConnectionState (tuple) == SYN_ACK_CAPABLE_STATE) {
+                setConnectionState(CONNECTED_STATE, tuple);
+            }
+            if (getConnectionState (tuple) == SYN_ACK_JOIN_STATE) {
+                setConnectionState(CONNECTED_STATE, tuple);
+            }
+
             if (subConnDataMap.find(tuple) != subConnDataMap.end()) {
                 currentData = subConnDataMap[tuple];
                 subConnDataMap[tuple] = currentData + dataLength;
@@ -314,12 +368,17 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 	    mptcp_subtype_version_t *subtypeVersion =
 		    (mptcp_subtype_version_t *) (options + 2);
 	    if (subtypeVersion->mp_subtype == MP_CAPABLE_SUBTYPE) {
+                if (verifyHmacFlag(subtypeVersion) == false) {
+                    // H Flag not set. so normal TCP.
+                    break;
+                }
 		uint64_t *key = (uint64_t *) (options + 4);
 		if (isAck == 0) {
 		    memcpy (keySrc, key, KEY_SIZE_BYTES);
 		    subConnDataMap[tuple] = dataLength;
 		    keySrcMap[tuple] =
                         vector<unsigned char> (keySrc, keySrc + KEY_SIZE_BYTES);
+                    setConnectionState (SYN_CAPABLE_STATE, tuple);
 		} else {
 		    memcpy (keyDst, key, KEY_SIZE_BYTES);
 		    crypto->generateToken(keyDst, KEY_SIZE_BYTES, sha1);
@@ -343,11 +402,25 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 			connDataMap [clientToken] = connCurrentData + currentData + dataLength;
 			subConnDataMap [revTuple] = currentData + dataLength;
 		    }
+                    setConnectionState (SYN_ACK_CAPABLE_STATE, revTuple);
 		}
 	    } else if (subtypeVersion->mp_subtype == MP_JOIN_SUBTYPE &&
 		       isAck == 0) {
 		unsigned char *key = (unsigned char *) (options + 4);
 		uint32_t token = ntohl(*((uint32_t*)key));
+                bool useReverse = true;
+                if (clientTokens.find(token) == clientTokens.end() ||
+                    (clientTokens.find(token) != clientTokens.end() &&
+                     getConnectionState (token) != CONNECTED_STATE)) {
+                    // token Invalid or the main connection
+                    // is not in connected state.
+                    cout << " here 2 \n";
+                    break;
+                }
+		unsigned char *random = (unsigned char *) (options + 8);
+		uint32_t randomNum = ntohl(*((uint32_t*)random));
+                senderRandomMap[tuple] = randomNum;
+
 		map<uint32_t, vector<MptcpTuple> >::iterator it;
 		it = countSubConnMap.find(token);
 		vector<MptcpTuple> listTuple;
@@ -366,6 +439,7 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 		    currentData = connDataMap[token];
 		}
 		connDataMap [token] = dataLength + currentData;
+                setConnectionState (SYN_JOIN_STATE, tuple);
 	    } else if (subtypeVersion->mp_subtype == MP_JOIN_SUBTYPE &&
 		       isAck == 1) {
 		uint64_t currentData = 0;
@@ -380,6 +454,7 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 		    currentData = subConnDataMap[revTuple];
 		    subConnDataMap [revTuple] = currentData + dataLength;
 		}
+                setConnectionState (SYN_ACK_JOIN_STATE, revTuple);
 	    }
 	}
 	if (tcpOption->kind == NOOP_OPTION_TYPE) {
@@ -402,11 +477,16 @@ ProcessPcap::printMptcpConnInfo () {
 
     map<uint32_t, MptcpTuple>::iterator itBegin = clientTokens.begin();
     map<uint32_t, MptcpTuple>::iterator itEnd = clientTokens.end();
-    cout << endl << " Total Number of Distinct Mptcp Connection: " << clientTokens.size() << endl;
-    cout << " The details of Connections: " << endl << endl;
+    cout << endl << " The details of Connections: " << endl << endl;
+    int validMptcpConnections = 0;
+
     for (;itBegin != itEnd; itBegin++) {
         uint32_t clientToken = itBegin->first;
         MptcpTuple tuple = itBegin->second;
+        if (getConnectionState(tuple) != CONNECTED_STATE) {
+            continue;
+        }
+        validMptcpConnections += 1;
         uint32_t serverToken = serverTokens[tuple];
         map<uint32_t, vector<MptcpTuple> >::iterator it =
                             countSubConnMap.find(clientToken);
@@ -427,6 +507,9 @@ ProcessPcap::printMptcpConnInfo () {
 
         for (int j=0; j < listConns.size(); j++) {
             MptcpTuple subTuple = listConns[j];
+            if (getConnectionState(subTuple) != CONNECTED_STATE) {
+                continue;
+            }
             uint64_t totalSubConnData = subConnDataMap[subTuple];
             cout << " Sub Conn " << (j+1) << " Conn Details ipSrc " << subTuple.getSrcIp();
             cout << " ipDst " << subTuple.getDstIp();
@@ -437,4 +520,5 @@ ProcessPcap::printMptcpConnInfo () {
         }
         cout << endl << "-----------------------------------" << endl;
     }
+    cout << endl << " Total Number of Distinct Mptcp Connections : " << validMptcpConnections << endl << endl;
 }

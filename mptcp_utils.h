@@ -59,6 +59,17 @@ namespace mptcp_utils {
                mp_subtype:4;
 #endif
 
+        u_char mptcp_flags;
+
+#define MP_H 0x01
+#define MP_G 0x02
+#define MP_F 0x04
+#define MP_E 0x08
+#define MP_D 0x10
+#define MP_C 0x20
+#define MP_B 0x40
+#define MP_A 0x80
+
     } mptcp_subtype_version_t;
 
     int getEtherType (ether_header_t * etherHeader) {
@@ -96,6 +107,10 @@ namespace mptcp_utils {
 
     int getTcpHeaderLenInBytes (struct tcphdr* tcpHdr) {
         return tcpHdr->th_off * 4;
+    }
+
+    bool isMptcpHflagSet (mptcp_subtype_version_t* mptcp) {
+        return ((mptcp->mptcp_flags & MP_H) == 1);
     }
 
 } // end mptcp_utils namespace
