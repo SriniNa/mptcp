@@ -132,7 +132,14 @@ typedef enum {
 } connection_state_t;
 
 
-
+/*
+ *  Enum to maintain ack msg type.
+ */
+typedef enum {
+    CAPABLE_ACK_TYPE = 0,
+    JOIN_ACK_TYPE,
+    MAX_ACK_TYPE
+} ack_msg_type_t;
 
 /*
  *  The main class for processing packets from pcap file.
@@ -285,7 +292,9 @@ class ProcessPcap {
             unsigned char * options, unsigned char * tcpheaderEnd) {
         vector<uint32_t> computedHmac;
         vector<uint32_t> ackMsgHmac;
-        if (extractHmacMessage (options, tcpheaderEnd, ackMsgHmac) == false) {
+        vector<uint64_t> dummy;
+        if (extractFromMptcpOption (JOIN_ACK_TYPE, options, tcpheaderEnd,
+                                ackMsgHmac, dummy) == false) {
             return false;
         }
         getFullHmac (token, tuple, computedHmac);
@@ -298,11 +307,35 @@ class ProcessPcap {
     }
 
 
+    bool verifyKeysInAck (uint32_t token,
+            unsigned char * options, unsigned char * tcpheaderEnd) {
+        vector<uint64_t> keysVec;
+        vector<uint32_t> dummy;
+
+        if (extractFromMptcpOption (CAPABLE_ACK_TYPE, options, tcpheaderEnd,
+                                    dummy, keysVec) == false) {
+            return false;
+        }
+        unsigned char keySrc[KEY_SIZE_BYTES];
+        unsigned char keyDst[KEY_SIZE_BYTES];
+        getSrcKey (keySrc, token);
+        getDstKey (keyDst, token);
+
+        uint64_t sourceKey = be64toh(*((uint64_t*) keySrc));
+        uint64_t dstKey = be64toh(*((uint64_t*) keyDst));
+
+        if (sourceKey != keysVec[0] || dstKey != keysVec[1]) {
+            return false;
+        }
+        return true;
+    }
+
     void processTcpOptions (unsigned char* options, MptcpTuple& tuple,
                     MptcpTuple& revTuple, int isAck,
                     uint64_t dataLength, const unsigned char *tcpHeaderEnd);
-    bool extractHmacMessage (unsigned char* options,
-        unsigned char * tcpHeaderEnd, vector<uint32_t>& hmacMessage);
+    bool extractFromMptcpOption (ack_msg_type_t type, unsigned char* options,
+        unsigned char * tcpHeaderEnd, vector<uint32_t>& hmacMessage,
+        vector<uint64_t>& option64Bits);
 
     public:
     void processPcapFile (const char * fileName, const char * crypto);
@@ -419,21 +452,29 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
             uint64_t currentData = 0;
             uint32_t token = 0;
 
+            unsigned char * options =
+                   (unsigned char *) readPacket + sizeof(struct tcphdr);
             if (getConnectionState (tuple) == SYN_ACK_CAPABLE_STATE) {
-                setConnectionState(CONNECTED_STATE, tuple);
+                token = subConnMap[tuple];
+                if (verifyKeysInAck (token,
+                        options, (unsigned char *)tcpheaderEnd)) {
+                    setConnectionState(CONNECTED_STATE, tuple);
+                } else {
+                    cout << " failed key ack for " << token;
+                    continue;
+                }
             }
             if (getConnectionState (tuple) == SYN_ACK_JOIN_STATE) {
-                unsigned char * options =
-                   (unsigned char *) readPacket + sizeof(struct tcphdr);
                 token = subConnMap[tuple];
                 if (verifyHmacInAck (token, tuple,
                         options, (unsigned char *)tcpheaderEnd)) {
                     setConnectionState(CONNECTED_STATE, tuple);
+                } else {
+                    cout << " failed hmac ack for " << token;
+                    continue;
                 }
             }
-            if (getConnectionState(tuple) != CONNECTED_STATE) {
-                continue;
-            }
+ 
             if (subConnDataMap.find(tuple) != subConnDataMap.end()) {
                 currentData = subConnDataMap[tuple];
                 subConnDataMap[tuple] = currentData + dataLength;
@@ -603,8 +644,9 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 
 
 bool
-ProcessPcap::extractHmacMessage (unsigned char* options,
-    unsigned char * tcpHeaderEnd, vector<uint32_t>& hmacMessage) {
+ProcessPcap::extractFromMptcpOption (ack_msg_type_t type, unsigned char* options,
+    unsigned char * tcpHeaderEnd, vector<uint32_t>& hmacMessage,
+    vector<uint64_t>& option64Bit) {
 
     while (1) {
 	tcp_options_t * tcpOption = (tcp_options_t *) options;
@@ -615,15 +657,28 @@ ProcessPcap::extractHmacMessage (unsigned char* options,
 	    break;
 	}
 	if (tcpOption->kind == MPTCP_OPTION_TYPE) {
-            if (tcpOption->length != 24) {
-                return false;
+            if (type == JOIN_ACK_TYPE) {
+                if (tcpOption->length != 24) {
+                    return false;
+                }
+                for (int i = 0; i < 5; i++) {
+                    unsigned char *hmac = (unsigned char *) (options + 4 + i*4);
+		    uint32_t num = ntohl(*((uint32_t*)hmac));
+                    hmacMessage.push_back (num);
+                }
+                return true;
             }
-            for (int i = 0; i < 5; i++) {
-                unsigned char *hmac = (unsigned char *) (options + 4 + i*4);
-		uint32_t num = ntohl(*((uint32_t*)hmac));
-                hmacMessage.push_back (num);
+            if (type == CAPABLE_ACK_TYPE) {
+                if (tcpOption->length != 20) {
+                    return false;
+                }
+                for (int i = 0; i < 2; i++) {
+                    unsigned char *key = (unsigned char *) (options + 4 + i*8);
+		    uint64_t num = be64toh(*((uint64_t*)key));
+                    option64Bit.push_back (num);
+                }
+                return true;
             }
-            return true;
         }
 	if (tcpOption->kind == NOOP_OPTION_TYPE) {
 	    options = ((unsigned char *)options) + 1;
