@@ -285,69 +285,99 @@ class ProcessPcap {
         }
     }
 
-    bool verifyHmacInAck (uint32_t token, MptcpTuple& tuple,
-            unsigned char * options, unsigned char * tcpheaderEnd) {
-        vector<uint32_t> computedHmac;
-        vector<uint32_t> ackMsgHmac;
-        vector<uint64_t> dummy;
-        if (extractFromMptcpOption (JOIN_ACK_TYPE, options, tcpheaderEnd,
-                                ackMsgHmac, dummy) == false) {
-            return false;
-        }
-        getFullHmac (token, tuple, computedHmac);
-
-        int numWords = SHA1_OUT_SIZE_BYTES / 4;
-        for (int i = 0; i < numWords; i++) {
-            if (computedHmac[i] != ackMsgHmac[i]) {
-                return false;
-            }
-        }
-        return true;
-    }
-
 
     bool verifyKeysInAck (uint32_t token,
-            unsigned char * options, unsigned char * tcpheaderEnd) {
-        vector<uint64_t> keysVec;
-        vector<uint32_t> dummy;
+            unsigned char * options, unsigned char * tcpheaderEnd);
 
-        if (extractFromMptcpOption (CAPABLE_ACK_TYPE, options, tcpheaderEnd,
-                                    dummy, keysVec) == false) {
-            return false;
-        }
-        unsigned char keySrc[KEY_SIZE_BYTES];
-        unsigned char keyDst[KEY_SIZE_BYTES];
-        getSrcKey (keySrc, token);
-        getDstKey (keyDst, token);
-
-        uint64_t sourceKey = be64toh(*((uint64_t*) keySrc));
-        uint64_t dstKey = be64toh(*((uint64_t*) keyDst));
-
-        if (sourceKey != keysVec[0] || dstKey != keysVec[1]) {
-            return false;
-        }
-        return true;
-    }
-
+    bool verifyHmacInAck (uint32_t token, MptcpTuple& tuple,
+           unsigned char * options, unsigned char * tcpheaderEnd);
 
     void getFullHmac (uint32_t token, MptcpTuple& tuple, vector<uint32_t>& hMsg);
+
     uint64_t getTruncatedHmac (uint32_t token, MptcpTuple& tuple);
+
     void processTcpOptions (unsigned char* options, MptcpTuple& tuple,
                     MptcpTuple& revTuple, int isAck, uint64_t index,
                     uint64_t dataLength, const unsigned char *tcpHeaderEnd);
+
     bool extractFromMptcpOption (ack_msg_type_t type, unsigned char* options,
         unsigned char * tcpHeaderEnd, vector<uint32_t>& hmacMessage,
         vector<uint64_t>& option64Bits);
 
     public:
     void processPcapFile (const char * fileName, const char * crypto);
+
     void printMptcpConnInfo ();
 
 };
 
 
 
+/*****************************************************************************
+ *  verifyKeysInAck
+ *  Description: verifies that keys in Ack matches with the ones associated
+ *               with the sub-flow.
+ *
+ ****************************************************************************/
+bool
+ProcessPcap::verifyKeysInAck (uint32_t token,
+        unsigned char * options, unsigned char * tcpheaderEnd) {
+    vector<uint64_t> keysVec;
+    vector<uint32_t> dummy;
 
+    if (extractFromMptcpOption (CAPABLE_ACK_TYPE, options, tcpheaderEnd,
+                                    dummy, keysVec) == false) {
+        return false;
+    }
+    unsigned char keySrc[KEY_SIZE_BYTES];
+    unsigned char keyDst[KEY_SIZE_BYTES];
+    getSrcKey (keySrc, token);
+    getDstKey (keyDst, token);
+
+    uint64_t sourceKey = be64toh(*((uint64_t*) keySrc));
+    uint64_t dstKey = be64toh(*((uint64_t*) keyDst));
+
+    if (sourceKey != keysVec[0] || dstKey != keysVec[1]) {
+        return false;
+    }
+    return true;
+}
+
+
+/*****************************************************************************
+ *  verifyHmacInAck
+ *  Description: Compares the Hmac in the ack message with the computed hmac
+ *               and returns false if there is amismatch.
+ *
+ ****************************************************************************/
+bool
+ProcessPcap::verifyHmacInAck (uint32_t token, MptcpTuple& tuple,
+        unsigned char * options, unsigned char * tcpheaderEnd) {
+    vector<uint32_t> computedHmac;
+    vector<uint32_t> ackMsgHmac;
+    vector<uint64_t> dummy;
+    if (extractFromMptcpOption (JOIN_ACK_TYPE, options, tcpheaderEnd,
+                            ackMsgHmac, dummy) == false) {
+        return false;
+    }
+    getFullHmac (token, tuple, computedHmac);
+
+    int numWords = SHA1_OUT_SIZE_BYTES / 4;
+    for (int i = 0; i < numWords; i++) {
+        if (computedHmac[i] != ackMsgHmac[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+
+/*****************************************************************************
+ *  getTruncatedHmac
+ *  Description: gets the truncated 64 bit Hmac by computing from the keys
+ *               and random number associated with the sub-flow.
+ *
+ ****************************************************************************/
 uint64_t 
 ProcessPcap::getTruncatedHmac (uint32_t token, MptcpTuple& tuple) {
     unsigned char keySrc[KEY_SIZE_BYTES];
@@ -376,6 +406,12 @@ ProcessPcap::getTruncatedHmac (uint32_t token, MptcpTuple& tuple) {
 }
 
 
+/*****************************************************************************
+ *  getFullHmac
+ *  Description: gets the Full 160 bit Hmac by computing from the keys
+ *               and random number associated with the sub-flow.
+ *
+ ****************************************************************************/
 void
 ProcessPcap::getFullHmac (uint32_t token, MptcpTuple& tuple, vector<uint32_t>& hMsg) {
     unsigned char keySrc[KEY_SIZE_BYTES];
