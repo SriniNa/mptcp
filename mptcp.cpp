@@ -28,6 +28,8 @@
 #include <endian.h>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
+#include <string>
 #include <string.h>
 #include <map>
 #include <vector>
@@ -49,6 +51,9 @@ class MptcpTuple {
     string dstIp;
     int srcPort;
     int dstPort;
+    uint64_t index;
+    string compareAll;
+    string compareTuple;
 
     public:
     MptcpTuple () {
@@ -56,11 +61,27 @@ class MptcpTuple {
 
     MptcpTuple (string sIp, string dIp, int sPort, int dPort):
         srcIp(sIp), dstIp(dIp), srcPort(sPort), dstPort(dPort) {
+         stringstream ss;
+         ss << srcIp << srcPort << dstIp << dstPort;
+         compareTuple = ss.str();
+    }
 
+    MptcpTuple (string sIp, string dIp, int sPort, int dPort, uint64_t idx):
+        srcIp(sIp), dstIp(dIp), srcPort(sPort), dstPort(dPort), index(idx) {
+         stringstream ss;
+         ss << srcIp << srcPort << dstIp << dstPort;
+         compareTuple = ss.str();
+         ss << index;
+         compareAll = ss.str();
+         cout << compareAll << " " << compareTuple;
     }
 
     bool operator () (const MptcpTuple &lhs, const MptcpTuple &rhs) const {
-        return lhs.srcPort < rhs.srcPort; 
+        return (lhs.compareTuple.compare(rhs.compareTuple) < 0);
+    }
+
+    bool compareJustTuple (const MptcpTuple &rhs) const {
+        return (compareTuple.compare(rhs.compareTuple) < 0);
     }
 
     string getSrcIp () {
@@ -81,6 +102,13 @@ class MptcpTuple {
 };
 
 
+class CompareJustTuple {
+    public:
+    bool operator () (const MptcpTuple &lhs, const MptcpTuple &rhs) {
+        return (lhs.compareJustTuple (rhs));
+    }
+};
+
 
 /*
  *  Base class for Crypto Algo used.
@@ -98,6 +126,8 @@ class CryptoForToken {
     }
 
 };
+
+
 
 
 /*
@@ -181,6 +211,11 @@ class ProcessPcap {
     // map of tuple to connection state
     map <MptcpTuple, connection_state_t, MptcpTuple> connectionState;
 
+
+    // map of tuple to tuple index
+    map <MptcpTuple, uint64_t, CompareJustTuple> indexMap;
+
+
     // Crypto algo to be used.
     CryptoForToken *crypto;
 
@@ -234,60 +269,7 @@ class ProcessPcap {
         memcpy (hmacData + 4, (unsigned char *)&receiver, 4);
     }
 
-    uint64_t getTruncatedHmac (uint32_t token, MptcpTuple& tuple) {
-        unsigned char keySrc[KEY_SIZE_BYTES];
-        unsigned char keyDst[KEY_SIZE_BYTES];
-        unsigned char hmacKey[2 * KEY_SIZE_BYTES];
-        unsigned char hmacData[KEY_SIZE_BYTES];
-        unsigned char hmacResult[20] = {0};
-        unsigned int md_len = 20;
 
-        getSrcKey (keySrc, token);
-        getDstKey (keyDst, token);
-        getHmacKey (keyDst, keySrc, hmacKey);
-        uint32_t senderR = senderRandomMap[tuple];
-        uint32_t receiverR = receiverRandomMap[tuple];
-        getHmacData (receiverR, senderR, hmacData);
-
-        HMAC_CTX ctx;
-        HMAC_CTX_init(&ctx);
-        HMAC_Init(&ctx, hmacKey, sizeof(hmacKey), EVP_sha1());
-        HMAC_Update(&ctx, hmacData, sizeof(hmacData));
-        HMAC_Final(&ctx, hmacResult, &md_len);
-        HMAC_CTX_cleanup(&ctx);
-
-        uint64_t truncatedHmac = be64toh (*((uint64_t*) (hmacResult)));
-        return truncatedHmac;
-    }
-
-    void getFullHmac (uint32_t token, MptcpTuple& tuple, vector<uint32_t>& hMsg) {
-        unsigned char keySrc[KEY_SIZE_BYTES];
-        unsigned char keyDst[KEY_SIZE_BYTES];
-        unsigned char hmacKey[2 * KEY_SIZE_BYTES];
-        unsigned char hmacData[KEY_SIZE_BYTES];
-        unsigned char hmacResult[SHA1_OUT_SIZE_BYTES];
-        unsigned int md_len = SHA1_OUT_SIZE_BYTES;
-
-        getSrcKey (keySrc, token);
-        getDstKey (keyDst, token);
-        getHmacKey (keySrc, keyDst, hmacKey);
-        uint32_t senderR = senderRandomMap[tuple];
-        uint32_t receiverR = receiverRandomMap[tuple];
-        getHmacData (senderR, receiverR, hmacData);
-
-        HMAC_CTX ctx;
-        HMAC_CTX_init(&ctx);
-        HMAC_Init(&ctx, hmacKey, sizeof(hmacKey), EVP_sha1());
-        HMAC_Update(&ctx, hmacData, sizeof(hmacData));
-        HMAC_Final(&ctx, hmacResult, &md_len);
-        HMAC_CTX_cleanup(&ctx);
-
-        int wordSize = 4;
-        for (int i =0; i < SHA1_OUT_SIZE_BYTES; i += wordSize) {
-            uint32_t hmac = ntohl(*((uint32_t*) (hmacResult + i)));
-            hMsg.push_back(hmac);
-        }
-    }
 
     bool verifyHmacInAck (uint32_t token, MptcpTuple& tuple,
             unsigned char * options, unsigned char * tcpheaderEnd) {
@@ -333,6 +315,9 @@ class ProcessPcap {
         return true;
     }
 
+
+    void getFullHmac (uint32_t token, MptcpTuple& tuple, vector<uint32_t>& hMsg);
+    uint64_t getTruncatedHmac (uint32_t token, MptcpTuple& tuple);
     void processTcpOptions (unsigned char* options, MptcpTuple& tuple,
                     MptcpTuple& revTuple, int isAck,
                     uint64_t dataLength, const unsigned char *tcpHeaderEnd);
@@ -347,21 +332,66 @@ class ProcessPcap {
 };
 
 
-int main (int argc, char** argv)
-{
 
-    if (argc < 2) {
-        cout << " please specify pcap file to open" << endl;
-        exit(1);
-    }
-    ProcessPcap pcap;
-    if (argc > 2) {
-        pcap.processPcapFile (argv[1], argv[2]);
-    } else {
-        pcap.processPcapFile (argv[1], NULL);
-    }
-    pcap.printMptcpConnInfo ();
+
+uint64_t 
+ProcessPcap::getTruncatedHmac (uint32_t token, MptcpTuple& tuple) {
+    unsigned char keySrc[KEY_SIZE_BYTES];
+    unsigned char keyDst[KEY_SIZE_BYTES];
+    unsigned char hmacKey[2 * KEY_SIZE_BYTES];
+    unsigned char hmacData[KEY_SIZE_BYTES];
+    unsigned char hmacResult[20] = {0};
+    unsigned int md_len = 20;
+
+    getSrcKey (keySrc, token);
+    getDstKey (keyDst, token);
+    getHmacKey (keyDst, keySrc, hmacKey);
+    uint32_t senderR = senderRandomMap[tuple];
+    uint32_t receiverR = receiverRandomMap[tuple];
+    getHmacData (receiverR, senderR, hmacData);
+
+    HMAC_CTX ctx;
+    HMAC_CTX_init(&ctx);
+    HMAC_Init(&ctx, hmacKey, sizeof(hmacKey), EVP_sha1());
+    HMAC_Update(&ctx, hmacData, sizeof(hmacData));
+    HMAC_Final(&ctx, hmacResult, &md_len);
+    HMAC_CTX_cleanup(&ctx);
+
+    uint64_t truncatedHmac = be64toh (*((uint64_t*) (hmacResult)));
+    return truncatedHmac;
 }
+
+
+void
+ProcessPcap::getFullHmac (uint32_t token, MptcpTuple& tuple, vector<uint32_t>& hMsg) {
+    unsigned char keySrc[KEY_SIZE_BYTES];
+    unsigned char keyDst[KEY_SIZE_BYTES];
+    unsigned char hmacKey[2 * KEY_SIZE_BYTES];
+    unsigned char hmacData[KEY_SIZE_BYTES];
+    unsigned char hmacResult[SHA1_OUT_SIZE_BYTES];
+    unsigned int md_len = SHA1_OUT_SIZE_BYTES;
+
+    getSrcKey (keySrc, token);
+    getDstKey (keyDst, token);
+    getHmacKey (keySrc, keyDst, hmacKey);
+    uint32_t senderR = senderRandomMap[tuple];
+    uint32_t receiverR = receiverRandomMap[tuple];
+    getHmacData (senderR, receiverR, hmacData);
+
+    HMAC_CTX ctx;
+    HMAC_CTX_init(&ctx);
+    HMAC_Init(&ctx, hmacKey, sizeof(hmacKey), EVP_sha1());
+    HMAC_Update(&ctx, hmacData, sizeof(hmacData));
+    HMAC_Final(&ctx, hmacResult, &md_len);
+    HMAC_CTX_cleanup(&ctx);
+
+    int wordSize = 4;
+    for (int i =0; i < SHA1_OUT_SIZE_BYTES; i += wordSize) {
+        uint32_t hmac = ntohl(*((uint32_t*) (hmacResult + i)));
+        hMsg.push_back(hmac);
+    }
+}
+
 
 /*****************************************************************************
  *  processPcapFile
@@ -463,7 +493,6 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
                         options, (unsigned char *)tcpheaderEnd)) {
                     setConnectionState(CONNECTED_STATE, tuple);
                 } else {
-                    cout << " failed key ack for " << token;
                     continue;
                 }
             }
@@ -473,7 +502,6 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
                         options, (unsigned char *)tcpheaderEnd)) {
                     setConnectionState(CONNECTED_STATE, tuple);
                 } else {
-                    cout << " failed hmac ack for " << token;
                     continue;
                 }
             }
@@ -755,4 +783,22 @@ ProcessPcap::printMptcpConnInfo () {
         cout << endl << "-----------------------------------" << endl;
     }
     cout << endl << " Total Number of Distinct Mptcp Connections : " << validMptcpConnections << endl << endl;
+}
+
+
+
+int main (int argc, char** argv)
+{
+
+    if (argc < 2) {
+        cout << " please specify pcap file to open" << endl;
+        exit(1);
+    }
+    ProcessPcap pcap;
+    if (argc > 2) {
+        pcap.processPcapFile (argv[1], argv[2]);
+    } else {
+        pcap.processPcapFile (argv[1], NULL);
+    }
+    pcap.printMptcpConnInfo ();
 }
