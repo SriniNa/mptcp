@@ -73,15 +73,22 @@ class MptcpTuple {
          compareTuple = ss.str();
          ss << index;
          compareAll = ss.str();
-         cout << compareAll << " " << compareTuple;
     }
 
     bool operator () (const MptcpTuple &lhs, const MptcpTuple &rhs) const {
-        return (lhs.compareTuple.compare(rhs.compareTuple) < 0);
+        return (lhs.compareAll.compare(rhs.compareAll) < 0);
     }
 
     bool compareJustTuple (const MptcpTuple &rhs) const {
         return (compareTuple.compare(rhs.compareTuple) < 0);
+    }
+
+    void setIndex (uint64_t idx) {
+        stringstream ss;
+        ss << compareTuple;
+        index = idx;
+        ss << index;
+        compareAll = ss.str();
     }
 
     string getSrcIp () {
@@ -269,7 +276,14 @@ class ProcessPcap {
         memcpy (hmacData + 4, (unsigned char *)&receiver, 4);
     }
 
-
+    void setTupleWithIndex (MptcpTuple& tuple, MptcpTuple& revTuple) {
+        if (indexMap.find(tuple) != indexMap.end()) {
+            tuple.setIndex(indexMap[tuple]);
+        }
+        if (indexMap.find(revTuple) != indexMap.end()){
+            revTuple.setIndex(indexMap[tuple]);
+        }
+    }
 
     bool verifyHmacInAck (uint32_t token, MptcpTuple& tuple,
             unsigned char * options, unsigned char * tcpheaderEnd) {
@@ -319,7 +333,7 @@ class ProcessPcap {
     void getFullHmac (uint32_t token, MptcpTuple& tuple, vector<uint32_t>& hMsg);
     uint64_t getTruncatedHmac (uint32_t token, MptcpTuple& tuple);
     void processTcpOptions (unsigned char* options, MptcpTuple& tuple,
-                    MptcpTuple& revTuple, int isAck,
+                    MptcpTuple& revTuple, int isAck, uint64_t index,
                     uint64_t dataLength, const unsigned char *tcpHeaderEnd);
     bool extractFromMptcpOption (ack_msg_type_t type, unsigned char* options,
         unsigned char * tcpHeaderEnd, vector<uint32_t>& hmacMessage,
@@ -413,7 +427,7 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
     const unsigned char * headerEnd = NULL;
     const unsigned char * tcpheaderEnd = NULL;
     struct pcap_pkthdr pktHeader;
-    int i = 0;
+    uint64_t i = 0;
     int countSyns = 0;
 
     pPcap = pcap_open_offline(fileName, errBuffer);
@@ -441,6 +455,7 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
         ether_header_t * etherHeader = (ether_header_t*) readPacket;
         int etherType = getEtherType(etherHeader);;
         int etherOffset = 0;
+        uint64_t packetIndex = i;
 
         if (etherType == ETHERTYPE_IPV4) {
             etherOffset = 14;
@@ -482,6 +497,7 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
         if (isSyn == 0) {
             MptcpTuple tuple (ipSrc, ipDst, srcPort, dstPort);
             MptcpTuple revTuple (ipDst, ipSrc, dstPort, srcPort);
+            setTupleWithIndex (tuple, revTuple);
             uint64_t currentData = 0;
             uint32_t token = 0;
 
@@ -533,7 +549,8 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
             unsigned char * options = (unsigned char *)readPacket;
             MptcpTuple tuple (ipSrc, ipDst, srcPort, dstPort);
             MptcpTuple revTuple (ipDst, ipSrc, dstPort, srcPort);
-            processTcpOptions (options, tuple, revTuple, isAck, dataLength, tcpheaderEnd);
+            processTcpOptions (options, tuple, revTuple, isAck, packetIndex,
+                               dataLength, tcpheaderEnd);
         }
     }
 
@@ -549,7 +566,7 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
  ******************************************************************************/
 void
 ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
-                    MptcpTuple& revTuple, int isAck,
+                    MptcpTuple& revTuple, int isAck, uint64_t packetIndex,
                     uint64_t dataLength, const unsigned char* tcpHeaderEnd) {
 
     unsigned char keySrc[KEY_SIZE_BYTES];
@@ -577,11 +594,15 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 		uint64_t *key = (uint64_t *) (options + 4);
 		if (isAck == 0) {
 		    memcpy (keySrc, key, KEY_SIZE_BYTES);
+                    indexMap[tuple] = packetIndex;
+                    indexMap[revTuple] = packetIndex;
+                    setTupleWithIndex (tuple, revTuple);
 		    subConnDataMap[tuple] = dataLength;
 		    keySrcMap[tuple] =
                         vector<unsigned char> (keySrc, keySrc + KEY_SIZE_BYTES);
                     setConnectionState (SYN_CAPABLE_STATE, tuple);
 		} else {
+                    setTupleWithIndex (tuple, revTuple);
 		    memcpy (keyDst, key, KEY_SIZE_BYTES);
 		    keyDstMap[revTuple] =
                         vector<unsigned char> (keyDst, keyDst + KEY_SIZE_BYTES);
@@ -618,6 +639,9 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
                     // is not in connected state.
                     break;
                 }
+                indexMap[tuple] = packetIndex;
+                indexMap[revTuple] = packetIndex;
+                setTupleWithIndex (tuple, revTuple);
 		unsigned char *random = (unsigned char *) (options + 8);
 		uint32_t randomNum = *((uint32_t*)random);
                 senderRandomMap[tuple] = randomNum;
@@ -643,6 +667,7 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
                 setConnectionState (SYN_JOIN_STATE, tuple);
 	    } else if (subtypeVersion->mp_subtype == MP_JOIN_SUBTYPE &&
 		       isAck == 1) {
+                setTupleWithIndex (tuple, revTuple);
 		uint64_t currentData = 0;
 		uint32_t token = subConnMap[revTuple];
 		unsigned char *hmac = (unsigned char *) (options + 4);
