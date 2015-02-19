@@ -285,6 +285,16 @@ class ProcessPcap {
         }
     }
 
+    void updateConnectionData (uint32_t token, uint64_t dataLength) {
+        uint64_t currentData = 0;
+        if (token != 0) {
+            if (connDataMap.find(token) != connDataMap.end()) {
+                currentData = connDataMap[token];
+            }
+            connDataMap[token] = currentData + dataLength;
+        }
+    }
+
 
     bool verifyKeysInAck (uint32_t token,
             unsigned char * options, unsigned char * tcpheaderEnd);
@@ -573,11 +583,7 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
                 subConnDataMap[revTuple] = currentData + dataLength;
                 token = subConnMap[revTuple];
             }
-            currentData = 0;
-            if (token != 0) {
-                currentData = connDataMap[token];
-                connDataMap[token] = currentData + dataLength;
-            }
+            updateConnectionData (token, dataLength);
         } else if (isSyn != 0) {
             // When SYN flag is set
             countSyns += 1;
@@ -695,11 +701,8 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 		subConnMap[revTuple] = token;
 		subConnDataMap [tuple] = dataLength;
 
-		uint64_t currentData = 0;
-		if (connDataMap.find(token) != connDataMap.end()) {
-		    currentData = connDataMap[token];
-		}
-		connDataMap [token] = dataLength + currentData;
+                updateConnectionData (token, dataLength);
+
                 setConnectionState (SYN_JOIN_STATE, tuple);
 	    } else if (subtypeVersion->mp_subtype == MP_JOIN_SUBTYPE &&
 		       isAck == 1) {
@@ -719,10 +722,7 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
                     break;
                 }
 
-		if (connDataMap.find(token) != connDataMap.end()) {
-		    currentData = connDataMap[token];
-		    connDataMap [token] = dataLength + currentData;
-		}
+                updateConnectionData (token, dataLength);
 
 		currentData = 0;
 		if (subConnDataMap.find(revTuple) != subConnDataMap.end()) {
