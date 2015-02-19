@@ -503,9 +503,7 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
         uint64_t packetIndex = i;
 
         if (etherType == ETHERTYPE_IPV4) {
-            etherOffset = 14;
-        } else if (etherType == ETHERTYPE_8021Q) {
-            etherOffset = 18;
+            etherOffset = ETHERTYPE_IPV4_OFFSET;
         } else {
             continue;
         }
@@ -604,8 +602,6 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
     unsigned char keySrc[KEY_SIZE_BYTES];
     unsigned char keyDst[KEY_SIZE_BYTES];
     unsigned char sha1[SHA1_OUT_SIZE_BYTES];
-    unsigned char hmacKey[2 * KEY_SIZE_BYTES];
-    unsigned char hmacData[KEY_SIZE_BYTES];
 
     while (1) {
 	tcp_options_t * tcpOption = (tcp_options_t *) options;
@@ -654,7 +650,10 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 
 		    if (subConnDataMap.find(revTuple) != subConnDataMap.end()) {
 			uint64_t currentData = subConnDataMap[revTuple];
-			uint64_t connCurrentData = connDataMap[clientToken];
+			uint64_t connCurrentData = 0;
+                        if (connDataMap.find(clientToken) != connDataMap.end()) {
+			    connCurrentData = connDataMap[clientToken];
+                        }
 			connDataMap [clientToken] = connCurrentData + currentData + dataLength;
 			subConnDataMap [revTuple] = currentData + dataLength;
 		    }
@@ -709,8 +708,6 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
                 receiverRandomMap[revTuple] = randomNum;
 
                 uint64_t generatedHmac = getTruncatedHmac (token, revTuple);
-                vector<uint32_t> hmacMsg;
-                getFullHmac (token, revTuple,hmacMsg);
                 if (truncHmac != generatedHmac) {
                     break;
                 }
