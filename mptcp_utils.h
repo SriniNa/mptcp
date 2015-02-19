@@ -26,6 +26,8 @@
 #define MP_JOIN_SUBTYPE 1
 #define ETHER_ADDR_LEN 6
 
+#define WORDS_IN_HMAC_MSG 5
+
 using namespace std;
 
 
@@ -72,6 +74,44 @@ namespace mptcp_utils {
 
     } mptcp_subtype_version_t;
 
+    /*
+     *  MPTCP option fields token and random in MP_JOIN SYN Msg
+     *  in 3-way handshake.
+     */
+    typedef struct mptcp_join_syn {
+        uint32_t client_token;
+        uint32_t random_num;
+    } mptcp_join_syn_t;
+
+
+    /*
+     *  MPTCP option fields token and random in MP_JOIN SYN_ACK Msg
+     *  in 3-way handshake.
+     */
+    typedef struct mptcp_join_synack {
+        uint64_t truncated_hmac;
+        uint32_t random_num;
+    } mptcp_join_synack_t;
+
+    /*
+     *  MPTCP option fields with sender and receiver in MP_CAPABLE
+     *  ACK in 3-way handshake.
+     */
+    typedef struct mptcp_capable_ack {
+        uint64_t sender_key;
+        uint64_t receiver_key;
+    } mptcp_capable_ack_t;
+
+
+    /*
+     *  MPTCP option fields with sender and receiver in MP_CAPABLE
+     *  ACK in 3-way handshake.
+     */
+    typedef struct mptcp_join_ack {
+        uint32_t hmac [WORDS_IN_HMAC_MSG];
+    } mptcp_join_ack_t;
+
+
     int getEtherType (ether_header_t * etherHeader) {
         return ntohs(etherHeader->ether_type);
     }
@@ -113,6 +153,36 @@ namespace mptcp_utils {
         return ((mptcp->mptcp_flags & MP_H) == 1);
     }
 
+    uint32_t getClientTokenInSyn (mptcp_join_syn_t * joinSyn) {
+        return ntohl (joinSyn->client_token);
+    }
+
+    uint32_t getRandomInSyn (mptcp_join_syn_t * joinSyn) {
+        // No ntohl for random bcoz hmac is computed using network order.
+        return joinSyn->random_num;
+    }
+
+    uint64_t getTruncatedHmacInSynAck (mptcp_join_synack_t * joinSynAck) {
+        return be64toh (joinSynAck->truncated_hmac);
+    }
+
+    uint32_t getRandomInSynAck (mptcp_join_synack_t * joinSynAck) {
+        // No ntohl for random bcoz hmac is computed using network order.
+        return joinSynAck->random_num;
+    }
+
+    uint64_t getSenderKey (mptcp_capable_ack_t * capableAck) {
+        return be64toh (capableAck->sender_key);
+    }
+
+    uint64_t getReceiverKey (mptcp_capable_ack_t * capableAck) {
+        return be64toh (capableAck->receiver_key);
+    }
+
+
+    uint32_t getHmacWord (mptcp_join_ack_t* joinAck, int offset) {
+        return ntohl(joinAck->hmac[offset]);
+    }
 } // end mptcp_utils namespace
 
 #endif

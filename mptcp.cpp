@@ -372,8 +372,7 @@ ProcessPcap::verifyHmacInAck (uint32_t token, MptcpTuple& tuple,
     }
     getFullHmac (token, tuple, computedHmac);
 
-    int numWords = SHA1_OUT_SIZE_BYTES / 4;
-    for (int i = 0; i < numWords; i++) {
+    for (int i = 0; i < WORDS_IN_HMAC_MSG; i++) {
         if (computedHmac[i] != ackMsgHmac[i]) {
             return false;
         }
@@ -554,8 +553,6 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
                 if (verifyKeysInAck (token,
                         options, (unsigned char *)tcpheaderEnd)) {
                     setConnectionState(CONNECTED_STATE, tuple);
-                } else {
-                    continue;
                 }
             }
             if (getConnectionState (tuple) == SYN_ACK_JOIN_STATE) {
@@ -563,16 +560,9 @@ ProcessPcap::processPcapFile (const char * fileName, const char * cryptoName) {
                 if (verifyHmacInAck (token, tuple,
                         options, (unsigned char *)tcpheaderEnd)) {
                     setConnectionState(CONNECTED_STATE, tuple);
-                } else {
-                    continue;
                 }
             }
 
-
-            if (getConnectionState (tuple) != CONNECTED_STATE &&
-                getConnectionState(revTuple) != CONNECTED_STATE) {
-                continue;
-            }
  
             if (subConnDataMap.find(tuple) != subConnDataMap.end()) {
                 currentData = subConnDataMap[tuple];
@@ -627,13 +617,14 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 	}
 	if (tcpOption->kind == MPTCP_OPTION_TYPE) {
 	    mptcp_subtype_version_t *subtypeVersion =
-		    (mptcp_subtype_version_t *) (options + 2);
+		    (mptcp_subtype_version_t *) (options + sizeof(tcp_options_t));
 	    if (subtypeVersion->mp_subtype == MP_CAPABLE_SUBTYPE) {
                 if (verifyHmacFlag(subtypeVersion) == false) {
                     // H Flag not set. so normal TCP.
                     break;
                 }
-		uint64_t *key = (uint64_t *) (options + 4);
+		uint64_t *key = (uint64_t *) (options + sizeof(tcp_options_t) +
+                                              sizeof(mptcp_subtype_version_t));
 		if (isAck == 0) {
 		    memcpy (keySrc, key, KEY_SIZE_BYTES);
                     indexMap[tuple] = packetIndex;
@@ -671,8 +662,10 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
 		}
 	    } else if (subtypeVersion->mp_subtype == MP_JOIN_SUBTYPE &&
 		       isAck == 0) {
-		unsigned char *key = (unsigned char *) (options + 4);
-		uint32_t token = ntohl(*((uint32_t*)key));
+                mptcp_join_syn_t* joinSyn =
+                   (mptcp_join_syn_t *)
+                   (options + sizeof(tcp_options_t) + sizeof(mptcp_subtype_version_t));
+		uint32_t token = getClientTokenInSyn (joinSyn);
                 bool useReverse = true;
                 if (clientTokens.find(token) == clientTokens.end() ||
                     (clientTokens.find(token) != clientTokens.end() &&
@@ -684,8 +677,7 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
                 indexMap[tuple] = packetIndex;
                 indexMap[revTuple] = packetIndex;
                 setTupleWithIndex (tuple, revTuple);
-		unsigned char *random = (unsigned char *) (options + 8);
-		uint32_t randomNum = *((uint32_t*)random);
+		uint32_t randomNum = getRandomInSyn (joinSyn);;
                 senderRandomMap[tuple] = randomNum;
 
 		map<uint32_t, vector<MptcpTuple> >::iterator it;
@@ -709,10 +701,11 @@ ProcessPcap::processTcpOptions (unsigned char* options, MptcpTuple& tuple,
                 setTupleWithIndex (tuple, revTuple);
 		uint64_t currentData = 0;
 		uint32_t token = subConnMap[revTuple];
-		unsigned char *hmac = (unsigned char *) (options + 4);
-		uint64_t truncHmac = be64toh (*((uint64_t*)hmac));
-		unsigned char *random = (unsigned char *) (options + 12);
-		uint32_t randomNum = *((uint32_t*)random);
+                mptcp_join_synack_t* joinSynAck =
+                   (mptcp_join_synack_t *)
+                   (options + sizeof(tcp_options_t) + sizeof(mptcp_subtype_version_t));
+		uint64_t truncHmac = getTruncatedHmacInSynAck (joinSynAck);
+		uint32_t randomNum = getRandomInSynAck (joinSynAck);
                 receiverRandomMap[revTuple] = randomNum;
 
                 uint64_t generatedHmac = getTruncatedHmac (token, revTuple);
@@ -759,9 +752,11 @@ ProcessPcap::extractFromMptcpOption (ack_msg_type_t type, unsigned char* options
                 if (tcpOption->length != 24) {
                     return false;
                 }
-                for (int i = 0; i < 5; i++) {
-                    unsigned char *hmac = (unsigned char *) (options + 4 + i*4);
-		    uint32_t num = ntohl(*((uint32_t*)hmac));
+                mptcp_join_ack_t * joinAck =
+                   (mptcp_join_ack_t *)
+                   (options + sizeof(tcp_options_t) + sizeof(mptcp_subtype_version_t));
+                for (int i = 0; i < WORDS_IN_HMAC_MSG; i++) {
+		    uint32_t num = getHmacWord (joinAck, i);
                     hmacMessage.push_back (num);
                 }
                 return true;
@@ -770,11 +765,13 @@ ProcessPcap::extractFromMptcpOption (ack_msg_type_t type, unsigned char* options
                 if (tcpOption->length != 20) {
                     return false;
                 }
-                for (int i = 0; i < 2; i++) {
-                    unsigned char *key = (unsigned char *) (options + 4 + i*8);
-		    uint64_t num = be64toh(*((uint64_t*)key));
-                    option64Bit.push_back (num);
-                }
+                mptcp_capable_ack_t * capableAck =
+                   (mptcp_capable_ack_t *)
+                   (options + sizeof(tcp_options_t) + sizeof(mptcp_subtype_version_t));
+                uint64_t senderKey = getSenderKey (capableAck);
+                uint64_t receiverKey = getReceiverKey (capableAck);
+                option64Bit.push_back (senderKey);
+                option64Bit.push_back (receiverKey);
                 return true;
             }
         }
